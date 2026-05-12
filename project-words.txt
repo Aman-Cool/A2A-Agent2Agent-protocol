@@ -287,6 +287,9 @@ otelslog
 otlplog
 otlploggrpc
 otlploghttp
+otlpmetric
+otlpmetricgrpc
+otlpmetrichttp
 otlptrace
 otlptracegrpc
 otlptracehttp
@@ -330,6 +333,7 @@ sagikazarmark
 sailoperator
 scorecard
 sdklog
+sdkmetric
 sectionName
 semconv
 Serv
