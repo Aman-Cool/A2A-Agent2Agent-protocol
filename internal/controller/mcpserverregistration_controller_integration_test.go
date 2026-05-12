@@ -104,7 +104,7 @@ func createTestService(name, namespace string, port int32) *corev1.Service {
 }
 
 // createTestMCPServerRegistration creates an MCPServerRegistration for testing
-func createTestMCPServerRegistration(name, namespace, httpRouteName, toolPrefix string) *mcpv1alpha1.MCPServerRegistration {
+func createTestMCPServerRegistration(name, namespace, httpRouteName, prefix string) *mcpv1alpha1.MCPServerRegistration {
 	return &mcpv1alpha1.MCPServerRegistration{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
@@ -116,8 +116,8 @@ func createTestMCPServerRegistration(name, namespace, httpRouteName, toolPrefix 
 				Kind:  "HTTPRoute",
 				Name:  httpRouteName,
 			},
-			ToolPrefix: toolPrefix,
-			Path:       "/mcp",
+			Prefix: prefix,
+			Path:   "/mcp",
 		},
 	}
 }
