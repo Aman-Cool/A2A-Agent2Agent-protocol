@@ -26,6 +26,11 @@
 - When a client makes multiple tool calls to the same backend MCP server, the gateway should reuse the same backend session for efficiency. The backend session ID should remain consistent across multiple calls from the same client. When a client disconnects and reconnects, a new backend session should be created.
 
 
+### [Happy] Concurrent tool calls on a fresh session create only one backend session
+
+- When multiple concurrent tool calls arrive for the same gateway session before any backend session has been established, the gateway should initialize exactly one backend session and all concurrent calls should complete successfully using that same backend session ID. No backend connections should be leaked regardless of how many concurrent callers race to trigger initialization.
+
+
 ### [Happy] Test MCPVirtualServer behaves as expected when defined
 
 - When a developer defines an MCPVirtualServer resource and specifies the value of the `X-Mcp-Virtualserver` header as the name in the format `namespace/name`, where the namespace and name come from the created MCPVirtualServer resource, they should only get the tools specified in the MCPVirtualServer resource when they do a tools/list request to the MCP Gateway host.
@@ -167,3 +172,23 @@
 ### [Happy] Elicitation without handler errors
 
 - When a client connects to the gateway without an elicitation handler and calls a tool that triggers an elicitation request, the call should result in an error. The error may be a transport error or an error indicated in the tool result.
+
+### [Happy,URLElicitation] URL elicitation triggers on missing token for elicitation-capable client
+
+- When an elicitation-capable client calls a tool on an MCPServerRegistration that has `tokenURLElicitation` configured but the client has no cached token, the gateway should return a -32042 URLElicitationRequired error containing a URL pointing to the token page. The response should be an SSE JSON-RPC error with code -32042 and a `data.url` field.
+
+### [Happy,URLElicitation] Full round-trip: token page submit then retry succeeds
+
+- When an elicitation-capable client receives a -32042 error, it should be able to GET the token page URL, POST the token via the form with the elicitation_id, then retry the tool call. On retry the cached token should be injected by the router as an Authorization header and the upstream server should receive it and return a successful tool response.
+
+### [URLElicitation] Cached token reused across multiple tool calls
+
+- After a token has been submitted via the token page, subsequent tool calls to the same server from the same session should reuse the cached token without triggering a new -32042 error. The upstream server should receive the token on each call.
+
+### [URLElicitation] Non-elicitation-capable client gets standard error on missing token
+
+- When a client that did NOT declare `capabilities.elicitation` in its initialize request calls a tool on a server with `tokenURLElicitation` configured and no cached token, the gateway should return a tool result with `isError: true` and a message about elicitation (not a -32042 JSON-RPC error). The client should not receive a URL for token submission.
+
+### [Happy,URLElicitation] Server without tokenURLElicitation is unaffected
+
+- When an MCPServerRegistration does NOT have `tokenURLElicitation` configured and the backend does not require auth, tool calls should proceed without any token resolution or -32042 errors, regardless of whether the client declares elicitation capability.
