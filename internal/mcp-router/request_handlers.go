@@ -722,6 +722,14 @@ func (s *ExtProcServer) initializeMCPSeverSession(ctx context.Context, mcpReq *M
 			passThroughHeaders["x-mcp-toolname"] = mcpReq.ToolName()
 			passThroughHeaders["user-agent"] = "mcp-router"
 		}
+		// for servers with token URL elicitation, inject the cached user token so
+		// the hairpin initialize request authenticates with the upstream, not the
+		// client's gateway-bound JWT.
+		if s.ElicitationEnabled && mcpServerConfig.TokenURLElicitation != nil {
+			if token, ok, err := s.SessionCache.GetUserToken(flightCtx, mcpReq.GetSessionID(), mcpServerConfig.Name); err == nil && ok {
+				passThroughHeaders["authorization"] = token
+			}
+		}
 		s.Logger.DebugContext(ctx, "initializing target as no mcp-session-id found for client", "server ", mcpReq.serverName, "with passthrough headers", passThroughHeaders)
 
 		clientElicitation := mcpReq.clientElicitation
