@@ -297,9 +297,13 @@ operatorframework
 operatorgroup
 opm
 otelslog
+dupl
 otlplog
 otlploggrpc
 otlploghttp
+otlpmetric
+otlpmetricgrpc
+otlpmetrichttp
 otlptrace
 otlptracegrpc
 otlptracehttp
