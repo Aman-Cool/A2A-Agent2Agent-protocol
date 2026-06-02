@@ -56,10 +56,6 @@ func main() {
 			"protocolVersion": "2025-06-18",
 			"capabilities": {
 			"logging": {},
-			"resources": {
-				"subscribe": true,
-				"listChanged": true
-			},
 			"tools": {
 				"listChanged": true
 			}
