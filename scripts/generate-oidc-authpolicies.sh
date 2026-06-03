@@ -36,7 +36,7 @@ done
 [[ -z "$EXTERNAL_URL" || -z "$ISSUER_URL" || -z "$CLIENT_ID" ]] && usage
 
 # derive host, encoded redirect URI, and cookie security flag from EXTERNAL_URL
-EXTERNAL_HOST=$(echo "$EXTERNAL_URL" | sed -E 's|^https?://||; s|:[0-9]+$||; s|/.*||')
+EXTERNAL_HOST=$(echo "$EXTERNAL_URL" | sed -E 's|^https?://||; s|/.*||; s|:[0-9]+$||')
 REDIRECT_URI_ENCODED=$(printf '%s/auth/callback' "$EXTERNAL_URL" | jq -sRr @uri)
 if [[ "$EXTERNAL_URL" == https://* ]]; then
   COOKIE_SECURE="Secure; "

@@ -13,4 +13,4 @@ spec:
     name: github-token
     key: token
   tokenURLElicitation:
-    url: {{ EXTERNAL_URL }}/tokens
+    url: "{{ EXTERNAL_URL }}/tokens"

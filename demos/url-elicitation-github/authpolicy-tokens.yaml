@@ -13,7 +13,7 @@ spec:
             cookie:
               name: jwt
           jwt:
-            issuerUrl: {{ ISSUER_URL }}
+            issuerUrl: "{{ ISSUER_URL }}"
           priority: 0
       response:
         success: {}

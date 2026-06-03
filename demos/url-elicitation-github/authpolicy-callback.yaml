@@ -33,14 +33,8 @@ spec:
                 # server-authoritative base URL — never derived from request.host
                 base := "{{ EXTERNAL_URL }}"
 
-                # build the OIDC auth URL with a percent-encoded callback redirect_uri
-                callback := concat("", [base, "/auth/callback"])
-                encoded_callback := replace(replace(replace(callback, ":", "%3A"), "/", "%2F"), "=", "%3D")
-                auth_url := concat("", [
-                  "{{ ISSUER_URL }}/protocol/openid-connect/auth?client_id={{ CLIENT_ID }}&redirect_uri=",
-                  encoded_callback,
-                  "&response_type=code&scope=openid"
-                ])
+                # build the OIDC auth URL using the pre-encoded redirect URI from the template
+                auth_url := "{{ ISSUER_URL }}/protocol/openid-connect/auth?client_id={{ CLIENT_ID }}&redirect_uri={{ REDIRECT_URI_ENCODED }}&response_type=code&scope=openid"
 
                 # intermediate vars for readability in the location rules below
                 authenticated := input.auth.metadata.token.id_token
@@ -86,7 +80,7 @@ spec:
             contentType: application/x-www-form-urlencoded
             credentials: {}
             method: POST
-            url: {{ ISSUER_URL }}/protocol/openid-connect/token
+            url: "{{ ISSUER_URL }}/protocol/openid-connect/token"
           priority: 0
           when:
             - predicate: >-
