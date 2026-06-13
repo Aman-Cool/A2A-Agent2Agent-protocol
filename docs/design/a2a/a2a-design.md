@@ -178,9 +178,14 @@ sequenceDiagram
         Upstream-->>Envoy: data: {"result": {"id": "upstream-abc", "status": "working"}}
         Envoy->>Router: ProcessingRequest_ResponseBody
         Note over Router: a2aSSEPassthrough.Process()<br/>first chunk: StoreTaskRoute(gatewayTaskID, TaskRoute{serverName, "upstream-abc"})<br/>all chunks: replace "upstream-abc" → "gateway-123"
-        Router-->>Client: data: {"result": {"id": "gateway-123", "status": "working"}}
+        Router-->>Envoy: BodyResponse with rewritten chunk
+        Envoy-->>Client: data: {"result": {"id": "gateway-123", "status": "working"}}
     end
-    Upstream-->>Client: data: {"result": {"id": "gateway-123", "status": "completed"}}
+    Upstream-->>Envoy: data: {"result": {"id": "upstream-abc", "status": "completed", "final": true}}
+    Envoy->>Router: ProcessingRequest_ResponseBody
+    Note over Router: a2aSSEPassthrough.Process()<br/>replace "upstream-abc" → "gateway-123"
+    Router-->>Envoy: BodyResponse with rewritten chunk
+    Envoy-->>Client: data: {"result": {"id": "gateway-123", "status": "completed", "final": true}}
 ```
 
 #### tasks/get Routing
@@ -236,7 +241,7 @@ stateDiagram-v2
 |---|---|
 | Controller (`A2AReconciler`) | Watches `A2AAgentRegistration` CRDs. Resolves HTTPRoute → upstream endpoint → agent card URL. Writes `A2AAgent` config to the config Secret. Sets `Ready` and `AgentCardDiscovered` status conditions. |
 | Broker (`a2a.Broker`) | Implements `config.Observer`. On config change, calls `SetAgents()`. `ServeAPICatalog()` serves `GET /.well-known/api-catalog` (RFC 9264) listing all enabled agent endpoints. `ServeAgentCard(prefix)` serves `GET /a2a/{prefix}/.well-known/agent.json` by proxying to the upstream agent's card endpoint. `GetAgentByPrefix(prefix)` resolves a path prefix to the upstream agent. |
-| Router (`ExtProcServer`) | At the `RequestHeaders` phase: detects A2A traffic by `:path` prefix; for `message/send`/`message/stream`, extracts agent prefix from `:path`, calls `A2ABroker.GetAgentByPrefix()`, generates a gateway task ID, sets `:authority` to the resolved agent hostname, sets `x-a2a-agent` and `x-a2a-task-id` headers. At the `RequestBody` phase: validates session JWT; for `tasks/get`/`tasks/cancel`, calls `ResolveTaskRoute()` to look up the upstream task ID, rewrites gateway task ID in request body to upstream task ID. At the `ResponseHeaders` phase: for all A2A requests, sets `ModeOverride ResponseBodyMode=BUFFERED` (non-streaming) or `STREAMED` (SSE) when `status == 200`. At the `ResponseBody` phase: for non-streaming `message/send`, parses upstream task ID from `result.id`, calls `StoreTaskRoute(gatewayTaskID, TaskRoute{...})`, rewrites upstream task ID to gateway task ID; for `tasks/get` responses, rewrites result task ID back to gateway task ID. `a2aSSEPassthrough.Process()` handles streaming: on first chunk stores `TaskRoute` and rewrites task IDs; on subsequent chunks rewrites only. |
+| Router (`ExtProcServer`) | At the `RequestHeaders` phase: detects A2A traffic by `:path` prefix; for `message/send`, extracts agent prefix from `:path`, calls `A2ABroker.GetAgentByPrefix()`, generates a gateway task ID, sets `:authority` to the resolved agent hostname, sets `x-a2a-agent` and `x-a2a-task-id` headers. At the `RequestBody` phase: validates session JWT; for `tasks/get`/`tasks/cancel`, calls `ResolveTaskRoute()` to look up the upstream task ID, rewrites gateway task ID in request body to upstream task ID. At the `ResponseHeaders` phase: for all A2A requests, sets `ModeOverride ResponseBodyMode=BUFFERED` (non-streaming) or `STREAMED` (SSE) when `status == 200`. At the `ResponseBody` phase: for non-streaming `message/send`, parses upstream task ID from `result.id`, calls `StoreTaskRoute(gatewayTaskID, TaskRoute{...})`, rewrites upstream task ID to gateway task ID; for `tasks/get` responses, rewrites result task ID back to gateway task ID. `a2aSSEPassthrough.Process()` handles streaming: on first chunk stores `TaskRoute` and rewrites task IDs; on subsequent chunks rewrites only. |
 | Config (`MCPServersConfig`) | Stores `A2AAgents []*A2AAgent` alongside `Servers`. `SetA2AAgents()`, `ListA2AAgents()` provide thread-safe access under the existing `sync.RWMutex`. `Notify()` delivers A2A agent list to observers. |
 | Config Secret (`SecretReaderWriter`) | `UpsertA2AAgent()` and `RemoveA2AAgent()` follow the existing read-modify-write pattern with `retry.RetryOnConflict()`. `BrokerConfig` YAML gains an `a2aAgents` key. |
 | Gateway HTTPRoute (`broker_router.go`) | `buildGatewayHTTPRoute()` gains two new rules: `/a2a` prefix match (with `stripRouterHeaders` filter removing `x-a2a-agent` and `x-a2a-task-id`, covering all `/a2a/{prefix}` paths including per-agent card endpoints) and `/.well-known/api-catalog`. `httpRouteNeedsUpdate()` via `DeepEqual` ensures automatic updates on existing deployments. |
