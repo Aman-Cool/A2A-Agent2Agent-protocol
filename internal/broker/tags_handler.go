@@ -20,6 +20,7 @@ func (m *mcpBrokerImpl) registerTagsTools() {
 	)
 	listTags.Meta = mcp.NewMetaFromMap(map[string]any{
 		brokerToolMetaKey: true,
+		"kuadrant/id":     brokerServerID,
 	})
 
 	filterByTags := mcp.NewTool(filterToolsByTagsName,
@@ -31,6 +32,7 @@ func (m *mcpBrokerImpl) registerTagsTools() {
 	)
 	filterByTags.Meta = mcp.NewMetaFromMap(map[string]any{
 		brokerToolMetaKey: true,
+		"kuadrant/id":     brokerServerID,
 	})
 
 	m.listeningMCPServer.AddTool(

@@ -23,6 +23,9 @@ const (
 	// brokerToolMetaKey marks a tool as a broker-internal meta-tool
 	brokerToolMetaKey = "kuadrant/broker-tool"
 
+	// brokerServerID is the gateway server ID used for broker-internal tools in conflict detection
+	brokerServerID = "broker"
+
 	// default scope store settings
 	defaultScopeTTL     = 24 * time.Hour
 	defaultScopeMaxSize = 10000
@@ -91,6 +94,7 @@ func (m *mcpBrokerImpl) registerDiscoveryTools() {
 	}
 	discoverTool.Meta = mcp.NewMetaFromMap(map[string]any{
 		brokerToolMetaKey: true,
+		"kuadrant/id":     brokerServerID,
 	})
 
 	selectTool := mcp.Tool{
@@ -112,6 +116,7 @@ func (m *mcpBrokerImpl) registerDiscoveryTools() {
 	}
 	selectTool.Meta = mcp.NewMetaFromMap(map[string]any{
 		brokerToolMetaKey: true,
+		"kuadrant/id":     brokerServerID,
 	})
 
 	m.listeningMCPServer.AddTools(

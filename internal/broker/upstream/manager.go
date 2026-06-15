@@ -546,9 +546,6 @@ func (man *MCPManager) findToolConflicts(mcpTools []server.ServerTool) error {
 	var conflictingToolNames []string
 	for _, tool := range mcpTools {
 		for existingToolName, existingToolInfo := range gatewayServerTools {
-			if existingToolName == "discover_tools" || existingToolName == "select_tools" {
-				continue
-			}
 			existingTool := existingToolInfo.Tool
 			if existingTool.Meta == nil || existingTool.Meta.AdditionalFields == nil {
 				man.logger.Debug("skipping conflict check, tool meta is nil", "upstream mcp server", man.mcp.ID(), "tool", existingToolName)
