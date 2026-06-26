@@ -166,7 +166,7 @@ func envMillis(key string, def int) time.Duration {
 }
 
 func buildCard() agentCard {
-	prefix := os.Getenv("SKILL_PREFIX")
+	prefix := os.Getenv("AGENT_PREFIX")
 	var skills []agentSkill
 	for _, id := range strings.Split(envDefault("SKILLS", "forecast,alerts"), ",") {
 		id = strings.TrimSpace(id)
@@ -254,10 +254,6 @@ func (s *server) handleA2A(w http.ResponseWriter, r *http.Request) {
 
 	switch req.Method {
 	case "message/send":
-		if wantsSSE(r) {
-			s.handleStream(w, r, req)
-			return
-		}
 		s.handleSend(w, r, req)
 	case "message/stream":
 		s.handleStream(w, r, req)
@@ -268,10 +264,6 @@ func (s *server) handleA2A(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeRPCError(w, req.ID, -32601, "method not found")
 	}
-}
-
-func wantsSSE(r *http.Request) bool {
-	return strings.Contains(r.Header.Get("Accept"), "text/event-stream")
 }
 
 func (s *server) handleSend(w http.ResponseWriter, r *http.Request, req rpcRequest) {
