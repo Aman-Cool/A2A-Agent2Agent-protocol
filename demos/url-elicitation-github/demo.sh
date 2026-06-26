@@ -5,7 +5,24 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 SAMPLES_DIR="$REPO_ROOT/config/samples/remote-github"
 NAMESPACE="mcp-test"
-GATEWAY_URL="http://mcp.127-0-0-1.sslip.io:8001/mcp"
+
+# defaults for local dev
+EXTERNAL_URL="http://mcp.127-0-0-1.sslip.io:8001"
+ISSUER_URL="https://keycloak.127-0-0-1.sslip.io:8002/realms/mcp"
+CLIENT_ID="mcp-token-browser"
+
+# parse optional --external-url before subcommand
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --external-url) EXTERNAL_URL="$2"; shift 2 ;;
+    --issuer-url)   ISSUER_URL="$2"; shift 2 ;;
+    --client-id)    CLIENT_ID="$2"; shift 2 ;;
+    cleanup)        CLEANUP=1; shift ;;
+    *)              echo "Unknown arg: $1"; exit 1 ;;
+  esac
+done
+
+GATEWAY_URL="${EXTERNAL_URL}/mcp"
 
 output() {
   echo ""
@@ -29,10 +46,22 @@ cleanup() {
   echo "Done."
 }
 
-if [ "${1:-}" = "cleanup" ]; then
+if [[ "${CLEANUP:-}" == "1" ]]; then
   cleanup
   exit 0
 fi
+
+# --- Generate AuthPolicy YAMLs from templates ---
+
+GENERATED_DIR=$(mktemp -d)
+trap 'rm -rf "$GENERATED_DIR"' EXIT
+
+"$REPO_ROOT/scripts/generate-oidc-authpolicies.sh" \
+  --external-url "$EXTERNAL_URL" \
+  --issuer-url "$ISSUER_URL" \
+  --client-id "$CLIENT_ID" \
+  --template-dir "$SCRIPT_DIR" \
+  --output-dir "$GENERATED_DIR"
 
 # --- Prerequisites ---
 
@@ -84,13 +113,13 @@ else
   fi
 fi
 
-KEYCLOAK_URL="https://keycloak.127-0-0-1.sslip.io:8002/realms/mcp/.well-known/openid-configuration"
+KEYCLOAK_WELL_KNOWN="${ISSUER_URL}/.well-known/openid-configuration"
 echo "Checking Keycloak is reachable..."
-KEYCLOAK_STATUS=$(curl -sk -o /dev/null -w "%{http_code}" "$KEYCLOAK_URL" 2>/dev/null || echo "000")
+KEYCLOAK_STATUS=$(curl -sk -o /dev/null -w "%{http_code}" "$KEYCLOAK_WELL_KNOWN" 2>/dev/null || echo "000")
 if [ "$KEYCLOAK_STATUS" = "200" ]; then
   echo "Keycloak is reachable."
 else
-  echo "ERROR: Keycloak is not reachable at $KEYCLOAK_URL (HTTP $KEYCLOAK_STATUS)"
+  echo "ERROR: Keycloak is not reachable at $KEYCLOAK_WELL_KNOWN (HTTP $KEYCLOAK_STATUS)"
   echo ""
   echo "Run the following to set up Keycloak and OAuth:"
   echo "  make auth-example-setup-no-vault"
@@ -135,7 +164,7 @@ kubectl rollout status deployment/mcp-gateway -n mcp-system --timeout=60s
 # --- Deploy MCPServerRegistration with tokenURLElicitation ---
 
 output "Step 5: Creating MCPServerRegistration with URL elicitation"
-kubectl apply -f "$SCRIPT_DIR/mcpserverregistration.yaml"
+sed "s|{{ EXTERNAL_URL }}|${EXTERNAL_URL}|g" "$SCRIPT_DIR/mcpserverregistration.yaml" | kubectl apply -f -
 echo ""
 echo "Note: This MCPServerRegistration has 'tokenURLElicitation: {}' which"
 echo "enables the -32042 URL elicitation flow for per-user token collection."
@@ -143,15 +172,15 @@ echo "enables the -32042 URL elicitation flow for per-user token collection."
 # --- Apply AuthPolicy ---
 
 output "Step 6: Applying AuthPolicy for OIDC authentication"
-kubectl apply -f "$SCRIPT_DIR/authpolicy.yaml"
+kubectl apply -f "$GENERATED_DIR/authpolicy-gateway.yaml"
 echo "AuthPolicy applied — gateway will require OIDC tokens via Keycloak."
 
 # --- Deploy OIDC auth for /tokens ---
 
 output "Step 7: Applying OIDC browser authentication for /tokens"
 kubectl apply -f "$SCRIPT_DIR/callback-httproute.yaml"
-kubectl apply -f "$SCRIPT_DIR/tokens-authpolicy.yaml"
-kubectl apply -f "$SCRIPT_DIR/callback-authpolicy.yaml"
+kubectl apply -f "$GENERATED_DIR/authpolicy-tokens.yaml"
+kubectl apply -f "$GENERATED_DIR/authpolicy-callback.yaml"
 echo "OIDC auth applied — browser requests to /tokens will redirect to Keycloak login."
 
 # --- Wait for readiness ---
@@ -185,10 +214,10 @@ fi
 
 output "URL Elicitation Demo Ready!"
 
-cat <<'INSTRUCTIONS'
+cat <<INSTRUCTIONS
 Add the gateway to Claude Code:
 
-  NODE_TLS_REJECT_UNAUTHORIZED=0 claude mcp add mcp-gateway --transport http http://mcp.127-0-0-1.sslip.io:8001/mcp
+  NODE_TLS_REJECT_UNAUTHORIZED=0 claude mcp add mcp-gateway --transport http ${EXTERNAL_URL}/mcp
 
 Or add to your project .mcp.json:
 
@@ -196,7 +225,7 @@ Or add to your project .mcp.json:
     "mcpServers": {
       "mcp-gateway": {
         "type": "url",
-        "url": "http://mcp.127-0-0-1.sslip.io:8001/mcp"
+        "url": "${EXTERNAL_URL}/mcp"
       }
     }
   }
@@ -216,7 +245,7 @@ Then in Claude Code:
   3. Claude will prompt you to open a URL in your browser —
      this is the gateway's token page.
 
-  4. Open that URL. 
+  4. Open that URL.
 
   5. You will be re-directed to keycloak. Login with mcp mcp (this is authenticating you in the browser)
 

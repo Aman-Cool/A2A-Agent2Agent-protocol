@@ -13,4 +13,4 @@ spec:
     name: github-token
     key: token
   tokenURLElicitation:
-    url: http://mcp.127-0-0-1.sslip.io:8001/tokens
+    url: "{{ EXTERNAL_URL }}/tokens"
