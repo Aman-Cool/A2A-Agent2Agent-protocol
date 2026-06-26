@@ -130,6 +130,7 @@ type task struct {
 	Artifacts []artifact `json:"artifacts,omitempty"`
 	History   []message  `json:"history,omitempty"`
 	Kind      string     `json:"kind"`
+	createdAt time.Time  `json:"-"`
 }
 
 type statusUpdateEvent struct {
@@ -184,6 +185,36 @@ type server struct {
 	tasks       map[string]*task
 	taskDelay   time.Duration
 	streamDelay time.Duration
+	taskTTL     time.Duration
+}
+
+// sweepLoop periodically drops terminal tasks older than taskTTL so the in-memory
+// store stays bounded under sustained load (e.g. stress-testing the gateway). Only
+// terminal tasks are removed, so an in-flight task is never deleted mid-test.
+func (s *server) sweepLoop() {
+	interval := s.taskTTL
+	if interval > time.Minute {
+		interval = time.Minute
+	}
+	if interval < time.Second {
+		interval = time.Second
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for range ticker.C {
+		s.sweep()
+	}
+}
+
+func (s *server) sweep() {
+	cutoff := time.Now().Add(-s.taskTTL)
+	s.mu.Lock()
+	for id, t := range s.tasks {
+		if isTerminal(t.Status.State) && t.createdAt.Before(cutoff) {
+			delete(s.tasks, id)
+		}
+	}
+	s.mu.Unlock()
 }
 
 func newID(prefix string) string {
@@ -402,6 +433,7 @@ func (s *server) createTask(r *http.Request, msg message) *task {
 		ContextID: newID("a2a-ctx-"),
 		Status:    taskStatus{State: stateCompleted, Timestamp: now()},
 		Kind:      "task",
+		createdAt: time.Now(),
 	}
 	msg.TaskID = t.ID
 	msg.ContextID = t.ContextID
@@ -515,6 +547,7 @@ func (s *server) handleStream(w http.ResponseWriter, r *http.Request, req rpcReq
 		ContextID: newID("a2a-ctx-"),
 		Status:    taskStatus{State: stateSubmitted, Timestamp: now()},
 		Kind:      "task",
+		createdAt: time.Now(),
 	}
 	params.Message.TaskID = t.ID
 	params.Message.ContextID = t.ContextID
@@ -736,7 +769,9 @@ func main() {
 		tasks:       map[string]*task{},
 		taskDelay:   envMillis("TASK_DURATION_MS", 2000),
 		streamDelay: envMillis("STREAM_DELAY_MS", 200),
+		taskTTL:     envMillis("TASK_TTL_MS", 600000),
 	}
+	go srv.sweepLoop()
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/.well-known/agent-card.json", srv.serveCard)
