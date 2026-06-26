@@ -218,6 +218,40 @@ sequenceDiagram
     Envoy-->>Client: data: {"result": {"taskId": "gateway-123", "status": {"state": "completed"}, "final": true}}
 ```
 
+#### SSE artifact passthrough — envelope-only parsing
+
+A2A streaming events carry multi-modal Artifacts whose `parts` may include large base64
+`FilePart.file.bytes`, `DataPart.data`, and text. The task ID the gateway must rewrite, however, lives
+only at the **top of the event envelope** — `result.id` (initial `kind:task`), `result.taskId`
+(`status-update`/`artifact-update`) — sibling to the heavy `status`/`artifact`/`artifacts`/`history`
+fields, **never inside `parts`** (§6.4–6.7). `a2aSSEPassthrough` exploits this so it never inspects
+payload bytes:
+
+- It works line-by-line over `data:` lines (buffering a partial line until newline-complete), like the
+  elicitation `sseRewriter` (`internal/mcp-router/elicitation.go`).
+- Per line it unmarshals **only the JSON-RPC envelope and the result's identity fields** (`id`,
+  `taskId`, `contextId`) into a struct that captures those as strings and keeps **every heavy subtree —
+  `status`, `artifact`, `artifacts`, `history`, `message`, and all `parts` — as `json.RawMessage`** (the
+  same discipline `sseRewriter` already uses for `params`/`result`). The router **never unmarshals,
+  decodes, or re-encodes Part content**: `FilePart.file.bytes` (base64 images/files), `DataPart.data`,
+  and `TextPart.text` pass through as opaque bytes.
+- It swaps the upstream task ID → gateway task ID at the identity fields and re-marshals the envelope;
+  the `RawMessage` subtrees are emitted byte-for-byte. For `history[].taskId` (the same task's own ID
+  inside the heavy `history` of a full Task object), the rewrite is a **scoped** replacement of the
+  single known upstream task-ID string within the `history` raw bytes only — never a global replace, so
+  Part content cannot be corrupted.
+
+**Cost.** Per event the router does work proportional to the **envelope size, not the artifact size** —
+no base64 decode, no `Part` allocation, no re-encode of multimodal payloads; large artifacts pass
+through raw. Two honest bounds: (1) the line reader still buffers a single `data:` event until its
+terminating newline, so one pathological multi-MB artifact event is held whole — A2A's artifact chunking
+(`append`/`lastChunk` on `artifact-update`) is the spec mechanism for streaming large outputs across
+events, and there is no response-side SSE size cap today (`docs/design/security-architecture.md`), so
+bound it with Envoy buffer limits or a configurable cap; (2) `RawMessage` passthrough avoids *parsing*
+but the envelope re-marshal still copies those raw bytes once — if profiling shows that copy matters for
+very large single events, the fallback is an in-place byte-splice of just the ID token (zero payload
+copy, at the cost of more careful scoping).
+
 #### tasks/get Routing
 
 ```mermaid
@@ -274,7 +308,7 @@ stateDiagram-v2
 |---|---|
 | Controller (`A2AReconciler`) | Watches `A2AAgentRegistration` CRDs. Resolves HTTPRoute → upstream endpoint → agent card URL. Writes `A2AAgent` config to the config Secret. Sets `Ready` and `AgentCardDiscovered` status conditions. |
 | Broker (`a2a.Broker`) | Implements `config.Observer`. On config change, calls `SetAgents()`. `ServeAPICatalog()` serves `GET /.well-known/api-catalog` as an RFC 9264 Linkset (`Content-Type: application/linkset+json`, registered by RFC 9727) listing all enabled agent endpoints. `ServeAgentCard(prefix)` serves `GET /a2a/{prefix}/.well-known/agent-card.json` from a cached, ticker-refreshed copy of the upstream card (mirroring `MCPManager`; not a per-request proxy), rewriting the card's `url` field to the gateway path (`/a2a/{prefix}`) so unmodified A2A clients route back through the gateway. `GetAgentByPrefix(prefix)` resolves a path prefix to the upstream agent. |
-| Router (`ExtProcServer`) | At the `RequestHeaders` phase: detects A2A traffic by `:path` prefix; extracts the agent prefix from `:path`, calls `A2ABroker.GetAgentByPrefix()`, sets `:authority` to the resolved agent hostname and the `x-a2a-agent` header. The JSON-RPC method is not known until the body, so **all method-specific work happens at `RequestBody`**, not here. At the `RequestBody` phase: authenticates via the OAuth principal (`sub`, read with `ExtractSubClaim`); for `message/send`/`message/stream` generates the gateway task ID and sets `x-a2a-task-id`; for `tasks/get`/`tasks/cancel`/`tasks/resubscribe` calls `ResolveTaskRoute()`, verifies the principal owns the task, and rewrites the gateway task ID in the request body to the upstream task ID. At the `ResponseHeaders` phase: sets `ModeOverride ResponseBodyMode=BUFFERED` (non-streaming) or `STREAMED` (`message/stream`/`tasks/resubscribe`) when `status == 200`. At the `ResponseBody` phase: for non-streaming methods, parses the upstream task ID from `result.id`, calls `StoreTaskRoute()`, rewrites upstream→gateway task ID (a buffered full-body JSON rewrite, distinct from the line-based SSE path), and evicts the route on a body-level `-32001`. `a2aSSEPassthrough.Process()` handles streaming: on the first `kind:task` event it stores the `TaskRoute`, and on every event it rewrites task IDs across `result.id`, `result.taskId`, and `history[].taskId`. |
+| Router (`ExtProcServer`) | At the `RequestHeaders` phase: detects A2A traffic by `:path` prefix; extracts the agent prefix from `:path`, calls `A2ABroker.GetAgentByPrefix()`, sets `:authority` to the resolved agent hostname and the `x-a2a-agent` header. The JSON-RPC method is not known until the body, so **all method-specific work happens at `RequestBody`**, not here. At the `RequestBody` phase: authenticates via the OAuth principal (`sub`, read with `ExtractSubClaim`); for `message/send`/`message/stream` generates the gateway task ID and sets `x-a2a-task-id`; for `tasks/get`/`tasks/cancel`/`tasks/resubscribe` calls `ResolveTaskRoute()`, verifies the principal owns the task, and rewrites the gateway task ID in the request body to the upstream task ID. At the `ResponseHeaders` phase: sets `ModeOverride ResponseBodyMode=BUFFERED` (non-streaming) or `STREAMED` (`message/stream`/`tasks/resubscribe`) when `status == 200`. At the `ResponseBody` phase: for non-streaming methods, parses the upstream task ID from `result.id`, calls `StoreTaskRoute()`, rewrites upstream→gateway task ID (a buffered full-body JSON rewrite, distinct from the line-based SSE path), and evicts the route on a body-level `-32001`. `a2aSSEPassthrough.Process()` handles streaming: on the first `kind:task` event it stores the `TaskRoute`, and on every event it rewrites task IDs across `result.id`, `result.taskId`, and `history[].taskId` — parsing only the event envelope, with `parts` (incl. base64 `FilePart` bytes) carried through as raw `json.RawMessage`, never decoded (see [SSE artifact passthrough](#sse-artifact-passthrough--envelope-only-parsing)). |
 | Config (`MCPServersConfig`) | Stores `A2AAgents []*A2AAgent` alongside `Servers`. `SetA2AAgents()`, `ListA2AAgents()` provide thread-safe access under the existing `sync.RWMutex`. `Notify()` delivers A2A agent list to observers. |
 | Config Secret (`SecretReaderWriter`) | `UpsertA2AAgent()` and `RemoveA2AAgent()` follow the existing read-modify-write pattern with `retry.RetryOnConflict()`. `BrokerConfig` YAML gains an `a2aAgents` key. |
 | Gateway HTTPRoute (`broker_router.go`) | `buildGatewayHTTPRoute()` gains two new rules: `/a2a` prefix match (with `stripRouterHeaders` filter removing `x-a2a-agent` and `x-a2a-task-id`, covering all `/a2a/{prefix}` paths including per-agent card endpoints) and `/.well-known/api-catalog`. `httpRouteNeedsUpdate()` via `DeepEqual` ensures automatic updates on existing deployments. |

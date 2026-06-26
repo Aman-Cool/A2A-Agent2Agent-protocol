@@ -330,6 +330,7 @@ make test-unit
 **Acceptance criteria:**
 - [ ] `a2aSSEPassthrough` struct with `Process(ctx, chunk []byte) []byte` and `Flush(ctx) []byte`
 - [ ] `Process()` rewrites upstream→gateway task IDs across `result.id`, `result.taskId`, and `history[].taskId` in `data:` lines (the field varies by event kind, §7.2)
+- [ ] Envelope-only parsing: unmarshal the JSON-RPC envelope + result identity fields only; keep `status`/`artifact`/`history`/`parts` as `json.RawMessage` — never decode `FilePart.file.bytes`/`DataPart.data`; `history[].taskId` rewrite is a scoped replace within the history raw bytes; cost is O(envelope), not O(artifact)
 - [ ] `HandleResponseHeaders()` sets `ModeOverride ResponseBodyMode=STREAMED` when `isA2A && isStreamingA2AMethod()` (`message/stream`/`tasks/resubscribe`)
 - [ ] Non-streaming `message/send`/`tasks/get` use a separate BUFFERED full-body rewrite path; an A2A flag gates `Process()` continuing into `ResponseBody` (today it only continues when `rewriter != nil`)
 - [ ] `Process()` loop handles `a2aPassthrough` in `ResponseBody` phase like `rewriter`
