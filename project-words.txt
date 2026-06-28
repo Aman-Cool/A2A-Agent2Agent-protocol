@@ -183,6 +183,7 @@ jsonpatch
 jsonpointer
 jsonreference
 jsonschema
+JWS
 jwtmgr
 Kagenti
 keyout

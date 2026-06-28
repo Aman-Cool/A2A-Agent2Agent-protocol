@@ -701,6 +701,28 @@ confused-deputy trade-off knowingly.
 | `message/send`/`tasks/*` — recommended | client | RFC 8693 token exchange (Authorino) → agent-audience token |
 | static-key / mTLS-only agent | gateway (opt-in) | per-agent static credential; client authz enforced at gateway AuthPolicy |
 
+### Card integrity (v1.0 signed cards)
+
+v0.3.0 cards are unsigned, so the broker rewriting a card's `url` to the gateway path
+([Component Responsibilities](#component-responsibilities)) is transparent. **A2A v1.0 adds JWS-signed
+AgentCards** — a client verifies the signature to detect tampering/spoofing, and that signature covers
+the `url` field, so **rewriting a signed card invalidates it**. This does not affect the v0.3.0 target
+but gates the v1.0 path (Q2). Three options, in preference order:
+
+1. **Serve the RFC 9727 catalog, not rewritten cards (preferred).** The broker already serves
+   `/.well-known/api-catalog` as a link set ([Component Responsibilities](#component-responsibilities));
+   leaning on links rather than mutating cards sidesteps the conflict entirely and is consistent with the
+   path-per-agent direction — the gateway routes by `:path` prefix regardless of the card's advertised
+   `url`.
+2. **Serve signed cards verbatim (no rewrite).** Preserves the signature, but the advertised `url` points
+   at the agent, so an unmodified client bypasses the gateway — defeating the policy perimeter for any
+   client that trusts only the signature.
+3. **Re-sign at the gateway.** The broker rewrites `url` and re-signs with a gateway key. Correct for the
+   client, but makes the gateway a **card-signing trust authority** (new key management and a trust-root
+   decision) — out of scope unless a deployment explicitly needs it.
+
+Decide alongside Q2; option 1 needs no new mechanism.
+
 ## Relationship to Existing Approaches
 
 A2A support is entirely additive. The `/mcp` path, all MCP request handling, all existing
