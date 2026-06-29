@@ -1810,8 +1810,8 @@ func TestBuildGatewayHTTPRoute_StripsRouterHeaders(t *testing.T) {
 	}
 
 	route := reconciler.buildGatewayHTTPRoute(mcpExt, "mcp.example.com")
-	if len(route.Spec.Rules) != 2 {
-		t.Fatalf("expected 2 rules, got %d", len(route.Spec.Rules))
+	if len(route.Spec.Rules) != 3 {
+		t.Fatalf("expected 3 rules, got %d", len(route.Spec.Rules))
 	}
 
 	if route.Spec.Rules[0].Name == nil || string(*route.Spec.Rules[0].Name) != "mcp" {
@@ -1819,6 +1819,12 @@ func TestBuildGatewayHTTPRoute_StripsRouterHeaders(t *testing.T) {
 	}
 	if route.Spec.Rules[1].Name == nil || string(*route.Spec.Rules[1].Name) != "well-known" {
 		t.Errorf("expected second rule name = %q, got %v", "well-known", route.Spec.Rules[1].Name)
+	}
+	if route.Spec.Rules[2].Name == nil || string(*route.Spec.Rules[2].Name) != "status" {
+		t.Errorf("expected third rule name = %q, got %v", "status", route.Spec.Rules[2].Name)
+	}
+	if len(route.Spec.Rules[2].Filters) != 0 {
+		t.Errorf("status rule should have no filters, got %d", len(route.Spec.Rules[2].Filters))
 	}
 
 	var found bool

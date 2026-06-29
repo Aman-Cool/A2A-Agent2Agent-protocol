@@ -650,6 +650,7 @@ func (r *MCPGatewayExtensionReconciler) buildGatewayHTTPRoute(mcpExt *mcpv1alpha
 	pathType := gatewayv1.PathMatchPathPrefix
 	mcpPath := "/mcp"
 	wellKnownPath := "/.well-known/oauth-protected-resource"
+	statusPath := "/status"
 	port := gatewayv1.PortNumber(brokerHTTPPort)
 	gatewayNamespace := gatewayv1.Namespace(mcpExt.Spec.TargetRef.Namespace)
 	sectionName := gatewayv1.SectionName(mcpExt.Spec.TargetRef.SectionName)
@@ -701,6 +702,18 @@ func (r *MCPGatewayExtensionReconciler) buildGatewayHTTPRoute(mcpExt *mcpv1alpha
 					Path: &gatewayv1.HTTPPathMatch{
 						Type:  &pathType,
 						Value: &wellKnownPath,
+					},
+				},
+			},
+			BackendRefs: backendRefs,
+		},
+		{
+			Name: ptr.To(gatewayv1.SectionName("status")),
+			Matches: []gatewayv1.HTTPRouteMatch{
+				{
+					Path: &gatewayv1.HTTPPathMatch{
+						Type:  &pathType,
+						Value: &statusPath,
 					},
 				},
 			},

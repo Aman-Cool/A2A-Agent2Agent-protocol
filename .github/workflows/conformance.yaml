@@ -98,7 +98,8 @@ jobs:
           echo "Waiting for Gateway to wire up the MCP routes and broker to fetch tools..."
           # wait for the gateway route to be active (non-502/503)
           for i in {1..30}; do
-            HTTP_STATUS=$(curl --max-time 2 -s -o /dev/null -w "%{http_code}" ${{ env.MCP_URL }} || echo "000")
+            HTTP_STATUS=$(curl --max-time 2 -s -o /dev/null -w "%{http_code}" "${{ env.MCP_URL }}" 2>/dev/null || true)
+            HTTP_STATUS=${HTTP_STATUS:-000}
             if [[ "$HTTP_STATUS" != "000" && "$HTTP_STATUS" != "0" && "$HTTP_STATUS" != "502" && "$HTTP_STATUS" != "503" ]]; then
               echo "Gateway route is active! HTTP Status: $HTTP_STATUS"
               break
@@ -116,7 +117,7 @@ jobs:
           echo "Waiting for broker to discover conformance server tools..."
           STATUS_URL="${MCP_URL%/mcp}/status"
           for i in {1..60}; do
-            TOOLS=$(curl --max-time 5 -s "$STATUS_URL" | grep -o '"totalTools":[0-9]*' | head -1 | cut -d: -f2)
+            TOOLS=$(curl --max-time 5 -s "$STATUS_URL" | jq '[.servers[] | select(.name | contains("conformance")) | .totalTools] | add // 0')
             if [ -n "$TOOLS" ] && [ "$TOOLS" -gt 0 ] 2>/dev/null; then
               echo "Broker has $TOOLS tools from conformance server."
               break
