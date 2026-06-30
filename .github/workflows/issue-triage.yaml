@@ -9,7 +9,6 @@ permissions: read-all
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.issue.number || github.ref }}
-  cancel-in-progress: true
 
 jobs:
   triage:
@@ -76,7 +75,7 @@ jobs:
 
             // Rule: Triage Declined -> Auto-close
             // If an issue is labeled 'triage/declined', close it as 'not_planned'.
-            if (currentLabels.includes('triage/declined') && issue.state === 'open') {
+            if (action === 'labeled' && eventLabel === 'triage/declined' && issue.state === 'open') {
               console.log('Issue marked as declined -> closing');
               await github.rest.issues.update({
                 owner: context.repo.owner,
@@ -85,13 +84,9 @@ jobs:
                 state: 'closed',
                 state_reason: 'not_planned'
               });
+              return;
             }
 
-            // Rule: Remove triage/needs-triage on close
-            if (action === 'closed' && currentLabels.includes('triage/needs-triage')) {
-              labelsToRemove.push('triage/needs-triage');
-              console.log('Issue closed -> removing triage/needs-triage');
-            }
 
             // Rule: Milestone-based triage
             // Skip milestone-based triage rules for closed events to avoid label mutation.
