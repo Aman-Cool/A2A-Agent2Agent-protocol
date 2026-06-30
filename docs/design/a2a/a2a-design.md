@@ -538,8 +538,9 @@ where creation order carries no meaning. The recommended resolution is to **name
 path as `/a2a/{namespace}/{prefix}`**, which makes collision structurally impossible (uniqueness reduces
 to a namespace-scoped check) and gives tenant isolation by construction. **[OPEN: adopting this switches
 the path form from `/a2a/{prefix}` (used throughout this doc) to `/a2a/{namespace}/{prefix}` everywhere —
-recommend the switch; pending mentor confirm.]** Cross-namespace registration is **allowed**: the
-controller honors `targetRef.namespace` (the fix tracked in #1139, from issue #1199).
+recommend the switch; pending mentor confirm.]** Cross-namespace registration is **allowed**: the A2A
+controller follows the cross-namespace `targetRef` pattern from #1139 (fixing issue #1199) — assumed to
+land, and copied rather than reimplemented.
 
 ## Policy Enforcement
 
