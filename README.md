@@ -1,232 +1,232 @@
-# MCP Gateway
+<div align="center">
 
-An Envoy-based gateway for Model Context Protocol (MCP) servers, enabling aggregation and routing of multiple MCP servers behind a single endpoint.
+<img src="https://readme-typing-svg.demolab.com?font=Fira+Code&weight=500&size=22&pause=1200&center=true&vCenter=true&width=640&lines=Teaching+an+MCP+gateway+to+speak+Agent2Agent;One+policy+plane+for+MCP+%2B+A2A+traffic;Discover+%2F+route+%2F+secure+inter-agent+tasks" alt="Teaching an MCP gateway to speak Agent2Agent" />
 
-## Vision
+# A2A Protocol Support — Exploration Fork
 
-See [VISION.md](./VISION.md) for project vision and design principles.
+[![Design Doc](https://img.shields.io/badge/design%20doc-Kuadrant%20%231114-8A2BE2?logo=github)](https://github.com/Kuadrant/mcp-gateway/pull/1114)
+[![Tracking Issue](https://img.shields.io/badge/upstream%20issue-%23766-blue?logo=github)](https://github.com/Kuadrant/mcp-gateway/issues/766)
+[![Test Server](https://img.shields.io/badge/test%20server-Kuadrant%20%231200-2ea44f?logo=github)](https://github.com/Kuadrant/mcp-gateway/pull/1200)
+[![A2A Spec](https://img.shields.io/badge/A2A-v1.0%20target-orange)](https://a2a-protocol.org/latest/specification/)
+[![LFX Mentorship](https://img.shields.io/badge/LFX%20Mentorship-2026%20Term%202-0094FF)](https://mentorship.lfx.linuxfoundation.org/)
 
-## Architecture
+</div>
 
-See [docs/design/overview.md](./docs/design/overview.md) for technical architecture.
+> [!IMPORTANT]
+> This is a **workshop fork** of [Kuadrant/mcp-gateway](https://github.com/Kuadrant/mcp-gateway) (the original project README lives [there](https://github.com/Kuadrant/mcp-gateway#readme)). The agreed home for this work is upstream — the design lands via [#1114](https://github.com/Kuadrant/mcp-gateway/pull/1114), and code upstreams incrementally once proven here. The fork exists so A2A exploration can move fast without carrying MCP regression risk into the main repo ; workshop in the fork, home in-tree.
 
-## Quick Install
+This fork is where I'm prototyping Agent2Agent (A2A) protocol support for Kuadrant's MCP Gateway, as part of the CNCF LFX mentorship *"Prototype A2A protocol support in the agentic gateway"* (2026 Term 2), mentored by the Kuadrant maintainers. Everything here traces back to an upstream artifact — the design doc, the test server, the review threads — and this README is the map.
 
-### Minimal Installation (bring your own infrastructure)
+## The problem, in one paragraph
 
-If you already have a Kubernetes cluster with [Gateway API](https://gateway-api.sigs.k8s.io/guides/) installed, install just the MCP Gateway components:
+The MCP Gateway handles the **vertical axis** of agentic workloads.., a single client consuming federated tools from many upstream MCP servers, with Kuadrant's AuthPolicy, RateLimitPolicy, and observability wrapped around every call. But as agentic architectures grow, a **horizontal axis** emerges: agents delegating long-running work to *other agents*, discovering peer capabilities, coordinating over tasks that run for seconds or days. That's what the [A2A protocol](https://a2a-protocol.org) standardizes ; and today, that traffic bypasses the gateway entirely. No auth, no rate limits, no discovery, no audit trail. Every agent-to-agent delegation is a direct connection outside the policy perimeter. This project puts it back inside.
 
-```bash
-# Install Gateway API CRDs
-kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.4.1/standard-install.yaml
-# Install MCP Gateway (quotes required for zsh)
-kubectl apply -k 'https://github.com/Kuadrant/mcp-gateway/config/install?ref=main'
+```mermaid
+flowchart LR
+    subgraph vertical["MCP — the vertical axis (today)"]
+        C1[Client] -->|tools/call| G1[Gateway]
+        G1 --> S1[MCP Server A]
+        G1 --> S2[MCP Server B]
+    end
+    subgraph horizontal["A2A — the horizontal axis (this work)"]
+        A1[Agent] -->|message/send| G2[Gateway]
+        G2 --> A2[Weather Agent]
+        G2 --> A3[Search Agent]
+        A2 -.long-running task.-> A1
+    end
 ```
 
-This installs:
-- MCP gateway CRDs
-- Broker/router deployment
-- Controller deployment
-- RBAC resources
+## A2A in two minutes
 
-See [config/install/README.md](./config/install/README.md) for details and prerequisites.
+A2A is an open protocol (originally Google, donated to the Linux Foundation, now at **v1.0**) for communication between *opaque* agents — agents that collaborate without sharing internal memory, tools, or logic. The pieces that matter for a gateway:
 
-### Development Environment
+- **Agent Cards** .., a JSON manifest served at a well-known path describing what an agent can do (skills), how to reach it (`url` / `supportedInterfaces`), and how to authenticate (`securitySchemes`). Discovery is card-driven: a client reads the card and sends work to whatever URL it advertises.
+- **Tasks** .., the unit of work. A `message/send` creates a task that moves through a lifecycle (`submitted → working → completed/failed/canceled`, with `input-required` and `auth-required` detours) and may outlive the request that created it by hours or days. Clients poll with `tasks/get`, cancel with `tasks/cancel`.
+- **Streaming** .., `message/stream` subscribes the client to real-time task updates over SSE, carrying multi-modal artifacts (text, files, structured data) as they're produced ; `tasks/resubscribe` reconnects a dropped stream.
+- **It complements MCP, not competes** — MCP standardizes agent-to-*tool*, A2A standardizes agent-to-*agent*. A gateway that already routes one is halfway to routing both.
 
-For a complete local environment with all dependencies (Istio, Gateway API, Keycloak, everything test server):
+<details>
+<summary><b>v0.3.0 → v1.0: what changed (and why this fork targets v1.0)</b></summary>
 
-```bash
-make local-env-setup
+<br>
+
+The spec moved under us mid-project, and the maintainer review agreed there's little value building against an already-superseded line. The v1.0 deltas we've verified against the spec repo:
+
+| Surface | v0.3.0 | v1.0 |
+|---|---|---|
+| Send | `message/send` | `SendMessage` (blocking by default) |
+| Stream | `message/stream` | `SendStreamingMessage` |
+| Task fetch / cancel | `tasks/get` / `tasks/cancel` | `GetTask` / `CancelTask` (+ `ListTasks`) |
+| Resubscribe | `tasks/resubscribe` | `SubscribeToTask` |
+| Well-known card path | `/.well-known/agent-card.json` | `/.well-known/a2a` |
+| Card endpoint field | top-level `url` | `supportedInterfaces[]` (+ `tenant` for multi-agent hosting) |
+| Card integrity | unsigned | JWS signatures over the JCS-canonicalized card |
+| Canonical definition | JSON schema | protobuf (`a2a.proto`) ; JSON-RPC binding uses PascalCase methods |
+
+The architecture is version-agnostic — routing, task-ID mapping, CRD, policy attachment all survive the rename. The version-specific surface (method names, well-known path, card shape) is isolated behind one mapping so the version is never load-bearing. That's the design's answer to a fast-moving spec.
+
+</details>
+
+## Why a gateway should carry this traffic
+
+The durable value isn't protocol plumbing — it's that inter-agent traffic picks up the same **Kuadrant policy plane** MCP traffic already has, with zero gateway code per policy: AuthPolicy (OIDC/JWT via Authorino) for who may talk to which agent, RateLimitPolicy (Limitador) for how often, OpenTelemetry traces stitching a task's whole lifecycle across requests, and centralized discovery so clients never need upstream addresses. Kuadrant policies attach to Gateway API HTTPRoutes ; that one fact drives most of the design below.
+
+## How it works
+
+Two flows carry the whole story. Discovery — the broker serves each registered agent's card with its `url` rewritten to the gateway path, which is the load-bearing trick that makes *unmodified* A2A clients route through the gateway:
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant Gateway as Gateway (Envoy)
+    participant Broker
+    participant Agent as Upstream Agent
+
+    Client->>Gateway: GET /.well-known/api-catalog
+    Gateway->>Broker: (RFC 9727 catalog)
+    Broker-->>Client: links: [/a2a/weather, /a2a/search]
+    Client->>Gateway: GET /a2a/weather/.well-known/agent-card.json
+    Broker->>Agent: periodic card refresh (ticker, conditional GET)
+    Note over Broker: rewrite card url → gateway path<br/>client now self-routes through the gateway
+    Broker-->>Client: AgentCard{url: gateway/a2a/weather, skills: [...]}
 ```
 
-This sets up:
-- a `kind` cluster
-- Istio as a Gateway API provider
-- MCP Gateway components (Broker / Router / Controller)
-- the everything test server
-- example MCPServerRegistration
+And invocation — the ext_proc router detects A2A by path prefix, routes to the right upstream, and isolates task IDs so clients never see upstream identifiers:
 
-To deploy all test servers, run `make deploy-test-servers` after setup.
+```mermaid
+sequenceDiagram
+    participant Client
+    participant Envoy
+    participant Router as ext_proc Router
+    participant Agent as Upstream Agent
 
-#### Adding e2e tests
-
-If you are adding an e2e test, please consider using the claude slash command provided : [e2e command](./.claude/commands/e2e-tests.md). You can of course still add them manually if you prefer.
-
-## Quick start with MCP Inspector
-
-Set up a local kind cluster with the Broker, Router & Controller running.
-These components are built during the make target into a single image and loaded into the cluster.
-Also sets up an Istio Gateway API Gateway with the everything test server behind the broker/router.
-
-```bash
-make local-env-setup
-
-# Or with custom ports (defaults: 8001->30080->8080 for MCP Broker/Gateway, 8002->30081->8002 for Keycloak)
-KIND_HOST_PORT_MCP_GATEWAY=8090 KIND_HOST_PORT_KEYCLOAK=8453 make local-env-setup
+    Client->>Envoy: POST /a2a/weather {method: message/send}
+    Envoy->>Router: RequestHeaders (:path = /a2a/weather)
+    Note over Router: detect A2A by path prefix<br/>resolve agent, set :authority
+    Envoy->>Router: RequestBody
+    Note over Router: method known only here<br/>generate gateway task ID
+    Envoy->>Agent: forward
+    Agent-->>Envoy: 200 {result: {id: upstream-abc}}
+    Envoy->>Router: ResponseHeaders
+    Note over Router: flip body mode per method:<br/>BUFFERED (send/get) or STREAMED (stream/resubscribe)
+    Envoy->>Router: ResponseBody
+    Note over Router: store route, rewrite upstream-abc → gateway-123
+    Envoy-->>Client: {result: {id: gateway-123}}
 ```
 
-> **Note**: If you change these ports, be mindful that some examples or YAML resources may need to be updated manually to use the updated port. You should check for anything that connects to `mcp.127-0-0-1.sslip.io` or `keycloak.127-0-0-1.sslip.io` and update the port numbers accordingly.
->
-> **Keycloak Port Requirement**: The host port for Keycloak needs to match the internal listener port (8002 in the default configuration) because there is a `hostAlias` in Authorino in the local dev environment that ensures Authorino calls back to Keycloak at the correct IP/port to validate tokens. If you change the host port (e.g., to 9999), you must also change the listener in the gateway to 9999, otherwise Authorino cannot reach Keycloak over the internal Kubernetes network.
+## How we got here
 
-Run the MCP Inspector and connect to the gateway
-
-```bash
-make inspect-gateway
+```mermaid
+timeline
+    title From PoC to workshop
+    May 2026 : Working PoC — federated agent-card broker (upstream PR 986, since superseded)
+    Early June : Design doc opened upstream (PR 1114) with the open questions flagged for mentors
+    Mid June : Line-by-line v0.3.0 spec pass — message/send carries NO skill field : pivot to path-per-agent routing + card url rewriting
+    Late June : A2A test server built (PR 1200) — SSE keepalives, heavy multi-modal artifacts, enforced auth modes, deterministic task states
+    June 29 : Nine-point maintainer review — v1.0 target, tenant field, signed cards, fork workflow
+    July 1 : Revised design up ; two OPEN decisions remain (v1.0 confirm, namespace-qualified paths)
+    July 2 : This fork opens for business — spike 1, per-method response ModeOverride
 ```
 
-This will start MCP Inspector and automatically open it with the correct URL for the gateway.
+The pivot in the middle is the story worth telling: the original design routed by reading a `skill` out of the `message/send` body, and the spec pass revealed that field **doesn't exist** — `MessageSendParams` is `{message, configuration, metadata}`, skills live only in the card. So routing moved to a path per agent (`/a2a/{prefix}`), which is also what [agentgateway](https://agentgateway.dev) converged on, and which turns out to be Kuadrant-optimal anyway.., policies attach to HTTPRoutes, and a path per agent means an *operator can attach a distinct AuthPolicy and RateLimitPolicy per agent*. The protocol forced a change that made the design better.
 
-## Example OAuth setup: Keycloak as an ACL Server
+## Where everything lives
 
-After running the Quick start above (either `make local-env-setup` or `make local-env-setup-olm`), configure OAuth authentication with a single command:
+| Workstream | Where | State |
+|---|---|---|
+| Design doc (routing, CRD, card serving, auth, task store) | [Kuadrant#1114](https://github.com/Kuadrant/mcp-gateway/pull/1114) | in review — all nine review points addressed, two `[OPEN]` decisions pending |
+| A2A test server (v0.3.0 surface, e2e target) | [Kuadrant#1200](https://github.com/Kuadrant/mcp-gateway/pull/1200) | draft, CI green — held for the v1.0 confirm, then migrates + goes ready |
+| Original PoC (federated card broker) | [Kuadrant#986](https://github.com/Kuadrant/mcp-gateway/pull/986) | closed — pre-pivot, superseded by the design |
+| Spike 1 — per-method response ModeOverride | [this fork, PR #1](../../pull/1) | code + unit tests done ; real-Envoy verification next |
+| Implementation (CRD, controller, broker, router) | this fork, branch per piece | starts after spike 1, upstreams once proven |
 
-```bash
-make auth-example-setup
+## The plan
+
+```mermaid
+gantt
+    title Twelve weeks, three phases
+    dateFormat YYYY-MM-DD
+    section Phase 1 — design
+    Design doc + gap analysis (1114)      :done,   p1a, 2026-06-01, 2026-06-27
+    A2A test server (1200)                :done,   p1b, 2026-06-20, 2026-06-28
+    section Phase 2 — build (fork)
+    Spike ModeOverride                    :active, p2a, 2026-07-01, 2026-07-08
+    CRD + controller                      :        p2b, 2026-07-08, 2026-07-21
+    Broker card serving + catalog         :        p2c, 2026-07-15, 2026-07-28
+    Router routing + task-ID mapping      :        p2d, 2026-07-22, 2026-08-04
+    section Phase 3 — prove
+    SSE streaming passthrough             :        p3a, 2026-08-04, 2026-08-14
+    E2E suite + upstreaming               :        p3b, 2026-08-10, 2026-08-24
 ```
 
-This will:
-- Install Keycloak
-- Set up a Keycloak realm with user/groups/client scopes, including group mappings for tool permissions
-- Configure the mcp-broker with OAuth environment variables
-- Apply AuthPolicy for token validation/exchange on the /mcp endpoint, including tool authorization via keycloak group mappings (both via Keycloak)
-- Apply additional OAuth configurations
-- Deploy several test MCP servers including OIDC-enabled MCP server
+- [x] Analysis of A2A vs MCP traffic patterns (request/response vs long-running tasks, push, multi-modal artifacts)
+- [x] Design doc: ext_proc routing, federated card serving, session implications, CRD design
+- [x] Deterministic A2A test server for e2e
+- [ ] Spike: mid-request response mode change (the one piece the review flagged as *"haven't seen it done before — good to derisk early"*)
+- [ ] `A2AAgentRegistration` CRD + controller (config fan-out per gateway namespace)
+- [ ] Broker: card cache behind a pluggable interface, RFC 9727 catalog endpoint
+- [ ] Router: path-per-agent routing, gateway-owned task IDs, buffered + streamed rewrites
+- [ ] E2E: discovery, task execution, streaming, auth, MCP regression
 
-The mcp-broker now serves OAuth discovery information at `/.well-known/oauth-protected-resource`.
+If the schedule slips, the must-have order is CRD/controller → card serving → routing → e2e ; streaming passthrough and metrics defer first.
 
-Finally, open MCP Inspector at http://localhost:6274/?transport=streamable-http&serverUrl=http://mcp.127-0-0-1.sslip.io:8001/mcp
+## Design decisions, and why
 
-When you click connect with MCP Inspector, you should be redirected to Keycloak. There you will need to login as the MCP user with password mcp. You now should only be able to access tools based on the ACL configuration.
+<details>
+<summary><b>1 — Path-per-agent routing, not skill dispatch</b></summary>
 
-You can modify tool authorization permissions by signing in to keycloak at https://keycloak.127-0-0-1.sslip.io:8002/ as the `admin` user with password `admin`, and modifying the 'Role Mappings' in the 'accounting' Group under the 'mcp' realm.
-Each MCP Server is represented as a 'Client', with each tool represented as a 'Role'.
+<br>
 
-## Running Modes
+The protocol never routes by skill — no `skill` field exists in `message/send` (§7.1.1, both spec versions). The two honest options were a path per agent or a custom header ; a header only works for clients we've specifically taught about the gateway, while a path works for *any* stock A2A client, because clients already POST to whatever URL the agent card advertises. The card the gateway serves points at `/a2a/{prefix}` — so the routing key lives in the card, not in anything the client has to be told. It's also what agentgateway (Linux Foundation) does, and it gives each agent its own HTTPRoute for per-agent policy attachment.
 
-### Standalone Mode (File-based)
-Uses a YAML configuration file to define MCP servers:
+</details>
 
-```bash
-make run
-# Or directly:
-./bin/mcp-broker-router --mcp-gateway-config ./config/samples/config.yaml
-```
+<details>
+<summary><b>2 — Card url rewriting is load-bearing (and the v1.0 signed-card tension)</b></summary>
 
-The broker watches the config file for changes and hot-reloads configuration automatically.
+<br>
 
-### Controller Mode (Kubernetes)
-Discovers MCP servers dynamically from Kubernetes Gateway API `HTTPRoute` resources:
+If the broker proxied upstream cards through unchanged, a client would read the upstream `url` and talk *directly* to the agent — silently bypassing the gateway: no AuthPolicy, no rate limits, no logs, and nothing errors. So the served card's `url` is rewritten to the gateway path ; that single rewrite is what makes unmodified clients route through the policy perimeter.
 
-```bash
-make run-controller
-# Or directly:
-./bin/mcp-broker-router --controller
-```
+v1.0 complicates it: cards can carry JWS signatures over the canonicalized card, and the signature covers the URL — a rewritten card is an invalidated signature. The direction under discussion upstream: route by path prefix (and v1.0's `tenant` field, which exists precisely for multiple agents behind one endpoint) and serve signed cards **verbatim**, with the catalog advertising the gateway endpoint. The open dependency — whether clients reliably discover via catalog/tenant rather than the card's own interface URL — is flagged in the design rather than hand-waved.
 
-In controller mode:
-- Watches `MCPServer` custom resources
-- Discovers servers via `HTTPRoute` references
-- Generates aggregated configuration in `ConfigMap`, for use by the broker/router
-- Exposes health endpoints on `:8081` and metrics on `:8082`
+</details>
 
-## Configuration
+<details>
+<summary><b>3 — Gateway-owned task IDs</b></summary>
 
-### Standalone Configuration
-Edit `config/samples/config.yaml`:
+<br>
 
-```yaml
-servers:
-  - name: weather-service
-    url: http://weather.example.com:8080
-    hostname: weather.example.com
-    enabled: true
-    prefix: "weather_"
-  - name: calendar-service
-    url: http://calendar.example.com:8080
-    hostname: calendar.example.com
-    enabled: true
-    prefix: "cal_"
-```
+Clients never see upstream task IDs. The router generates a gateway ID at the request, stores the `(gateway ID → agent, upstream ID)` route when the upstream's response reveals its ID, and rewrites every subsequent surface — response bodies, SSE events (`result.id`, `result.taskId`, `history[].taskId`), poll requests. Task ownership binds to the authenticated principal, so one client can't probe or cancel another's task by guessing IDs. Routes die on terminal task states ; a fixed Redis TTL backstops crashes, deliberately decoupled from session lifetime because A2A tasks can outlive any session.
 
-### Kubernetes Configuration
+</details>
 
-#### MCPServerRegistration Resource
+<details>
+<summary><b>4 — Per-method response body mode (the current spike)</b></summary>
 
-The `MCPServer` is a Kubernetes Custom Resource that defines an MCP (Model Context Protocol) server to be aggregated by the gateway. It enables discovery and federation of tools from backend MCP servers through Gateway API `HTTPRoute` references.
+<br>
 
-Each `MCPServer` resource:
-- References a single HTTPRoute that points to a backend MCP service
-- Configures a prefix to avoid naming conflicts when federating tools
-- Enables the controller to automatically discover and configure the broker with available MCP servers
-- Maintains status conditions to indicate whether the server is successfully discovered, valid and ready
+Non-streaming methods (`message/send`, `tasks/get`) need the *whole* response body in one pass to rewrite the task ID — Envoy's `BUFFERED` mode. Streaming methods (`message/stream`, `tasks/resubscribe`) need chunks as they arrive — `STREAMED`. The method is only known at the request-body phase, so the router must flip the mode **mid-request** at response-headers via ext_proc `ModeOverride`. The gateway already half-proves this (the elicitation path flips to STREAMED) ; choosing the mode per method, and the BUFFERED half, is the new bit — hence spike 1, with the finding feeding back into the design PR.
 
-Create `MCPServer` resources that reference HTTPRoutes:
+</details>
 
-```yaml
-apiVersion: mcp.kuadrant.io/v1alpha1
-kind: MCPServerRegistration
-metadata:
-  name: weather-tools
-spec:
-  targetRef:
-    group: gateway.networking.k8s.io
-    kind: HTTPRoute
-    name: weather-route
-  prefix: weather_
+<details>
+<summary><b>5 — Two auth paths that must never mix</b></summary>
+
+<br>
+
+Card fetching (broker → agent, no client involved) uses the registration's `credentialRef` — a static credential the router can never see. Task invocation (a real client behind every call) forwards the *client's* identity — bearer pass-through or, recommended, RFC 8693 token exchange re-audienced to the agent via Authorino. Injecting the gateway's static credential into client calls would be the classic confused-deputy: the agent loses the caller's identity and a low-privilege client rides the gateway's credential. Same split MCP already enforces, for the same reason.
+
+</details>
+
+## Reading list
+
+The primary sources this work leans on — fetched and verified, not summarized from memory: the [A2A specification](https://a2a-protocol.org/latest/specification/) and [what's new in v1.0](https://a2a-protocol.org/latest/whats-new-v1/) ; [RFC 9727](https://www.rfc-editor.org/rfc/rfc9727) (api-catalog well-known URI) and [RFC 9264](https://www.rfc-editor.org/rfc/rfc9264) (Linkset) for discovery ; [agentgateway](https://agentgateway.dev) as prior art for route-per-agent + card rewriting ; the upstream [design doc](https://github.com/Kuadrant/mcp-gateway/pull/1114) where the decisions above are argued in full ; and Kuadrant's own [MCP Gateway docs](https://docs.kuadrant.io) for the platform this extends.
+
 ---
-apiVersion: mcp.kuadrant.io/v1alpha1
-kind: MCPServerRegistration
-metadata:
-  name: calendar-tools
-spec:
-  targetRef:
-    group: gateway.networking.k8s.io
-    kind: HTTPRoute
-    name: calendar-route
-  prefix: cal_
-```
 
-## Command Line Flags
+<div align="center">
 
-```bash
---mcp-router-address            # gRPC ext_proc address (default: 0.0.0.0:50051)
---mcp-broker-public-address     # HTTP broker address (default: 0.0.0.0:8080)
---mcp-gateway-config            # Config file path (default: ./config/samples/config.yaml)
---controller                    # Enable Kubernetes controller mode
-```
+Everything here is headed upstream to [Kuadrant/mcp-gateway](https://github.com/Kuadrant/mcp-gateway) — if any of it interests you, the design discussion on [#1114](https://github.com/Kuadrant/mcp-gateway/pull/1114) is the room where it's happening, and pushback is genuinely welcome 🙂
 
-### OAuth Configuration
-
-The broker serves OAuth protected resource discovery at `/.well-known/oauth-protected-resource`. In controller-managed deployments, configure this via the `oauthProtectedResource` field on `MCPGatewayExtension`:
-
-```bash
-kubectl patch mcpgatewayextension mcp-gateway-extension -n mcp-system --type='merge' \
-  -p='{"spec":{"oauthProtectedResource":{"authorizationServers":["https://keycloak.example.com/realms/mcp"],"scopesSupported":["basic","read","write","groups"]}}}'
-```
-
-Only `authorizationServers` is required. Defaults: `resourceName` = `"MCP Server"`, `resource` = `https://<publicHost>/mcp`, `bearerMethodsSupported` = `["header"]`, `scopesSupported` = `["basic"]`.
-
-See the [authentication guide](docs/guides/authentication.md) and [MCPGatewayExtension reference](docs/reference/mcpgatewayextension.md) for full details.
-
-For standalone (non-Kubernetes) usage, the broker reads `OAUTH_RESOURCE_NAME`, `OAUTH_RESOURCE`, `OAUTH_AUTHORIZATION_SERVERS`, `OAUTH_BEARER_METHODS_SUPPORTED`, and `OAUTH_SCOPES_SUPPORTED` environment variables directly.
-
-**Response Format:**
-
-The endpoint returns a JSON response following the OAuth Protected Resource discovery specification:
-
-```json
-{
-  "resource_name": "MCP Server",
-  "resource": "https://mcp.example.com/mcp",
-  "authorization_servers": [
-    "https://keycloak.example.com/realms/mcp"
-  ],
-  "bearer_methods_supported": ["header"],
-  "scopes_supported": ["basic", "read", "write"]
-}
-```
-
-## Deployment to OpenShift
-
-A script is available to deploy the MCP Gateway and dependent services to an OpenShift cluster. Utilize the steps described [here](./config/openshift/README.md) to facilitate the deployment.
+</div>
