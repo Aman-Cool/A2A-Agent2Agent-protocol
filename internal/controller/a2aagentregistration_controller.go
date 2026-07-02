@@ -184,6 +184,11 @@ func (r *A2AReconciler) Reconcile(ctx context.Context, req reconcile.Request) (r
 
 // failStatus records a not-ready condition and returns the reconcile result for reconcileErr.
 // A nil reconcileErr exits cleanly (the condition is terminal until a watched resource changes).
+//
+// Previously written config is deliberately left in place on failure (last-known-good,
+// mirroring MCPServerRegistration): a transient error must not rip a live agent out of the
+// data plane. Config is removed only on deletion and on ReferenceGrant revocation — consent
+// is an explicit state, not a transient failure.
 func (r *A2AReconciler) failStatus(ctx context.Context, a2areg *mcpv1alpha1.A2AAgentRegistration, reason, message string, reconcileErr error) (reconcile.Result, error) {
 	if err := r.updateStatus(ctx, a2areg, false, reason, message); err != nil {
 		if apierrors.IsConflict(err) {

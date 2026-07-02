@@ -117,6 +117,8 @@ spec:
                   The referenced HTTPRoute should have a backend service that implements the A2A protocol.
                   The controller will discover the backend service from this HTTPRoute and configure
                   the broker to serve the agent's card and route requests to it.
+                  Immutable once set: retargeting a registration would leave the previous agent's
+                  config behind, so replacing an agent means replacing the registration.
                 properties:
                   group:
                     default: gateway.networking.k8s.io
@@ -141,6 +143,9 @@ spec:
                 required:
                 - name
                 type: object
+                x-kubernetes-validations:
+                - message: targetRef is immutable once set
+                  rule: self == oldSelf
             required:
             - agentPrefix
             - targetRef

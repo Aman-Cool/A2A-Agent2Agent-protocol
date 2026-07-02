@@ -323,6 +323,39 @@ var _ = Describe("A2AAgentRegistration Controller", func() {
 		})
 	})
 
+	Context("A2AAgentRegistration CRD validation", func() {
+		AfterEach(func() {
+			forceDeleteTestA2AAgentRegistration(ctx, "cel-probe", "default")
+		})
+
+		It("rejects agentPrefix mutation", func() {
+			a2areg := createTestA2AAgentRegistration("cel-probe", "default", "some-route", "weather")
+			Expect(testK8sClient.Create(ctx, a2areg)).To(Succeed())
+
+			a2areg.Spec.AgentPrefix = "forecast"
+			err := testK8sClient.Update(ctx, a2areg)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("agentPrefix is immutable"))
+		})
+
+		It("rejects targetRef mutation", func() {
+			a2areg := createTestA2AAgentRegistration("cel-probe", "default", "some-route", "weather")
+			Expect(testK8sClient.Create(ctx, a2areg)).To(Succeed())
+
+			a2areg.Spec.TargetRef.Name = "other-route"
+			err := testK8sClient.Update(ctx, a2areg)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("targetRef is immutable"))
+		})
+
+		It("rejects invalid agentPrefix pattern", func() {
+			a2areg := createTestA2AAgentRegistration("cel-probe", "default", "some-route", "Bad-Prefix")
+			err := testK8sClient.Create(ctx, a2areg)
+			Expect(err).To(HaveOccurred())
+			Expect(errors.IsInvalid(err)).To(BeTrue(), "expected Invalid error, got: %v", err)
+		})
+	})
+
 	Context("When targetRef references an HTTPRoute in another namespace", func() {
 		const routeNamespace = "a2a-routes"
 		const grantName = "a2a-route-grant"
