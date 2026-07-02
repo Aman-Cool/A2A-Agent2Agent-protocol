@@ -125,7 +125,7 @@ timeline
     Late June : A2A test server built (PR 1200) — SSE keepalives, heavy multi-modal artifacts, enforced auth modes, deterministic task states
     June 29 : Nine-point maintainer review — v1.0 target, tenant field, signed cards, fork workflow
     July 1 : Revised design up ; two OPEN decisions remain (v1.0 confirm, namespace-qualified paths)
-    July 2 : This fork opens for business — spike 1, per-method response ModeOverride
+    July 2 : This fork opens for business — spike 1, per-method response ModeOverride : Verified same day against real Envoy — BUFFERED + STREAMED honored mid-request, content-length constraint found + recorded
 ```
 
 The pivot in the middle is the story worth telling: the original design routed by reading a `skill` out of the `message/send` body, and the spec pass revealed that field **doesn't exist** — `MessageSendParams` is `{message, configuration, metadata}`, skills live only in the card. So routing moved to a path per agent (`/a2a/{prefix}`), which is also what [agentgateway](https://agentgateway.dev) converged on, and which turns out to be Kuadrant-optimal anyway.., policies attach to HTTPRoutes, and a path per agent means an *operator can attach a distinct AuthPolicy and RateLimitPolicy per agent*. The protocol forced a change that made the design better.
@@ -137,7 +137,7 @@ The pivot in the middle is the story worth telling: the original design routed b
 | Design doc (routing, CRD, card serving, auth, task store) | [Kuadrant#1114](https://github.com/Kuadrant/mcp-gateway/pull/1114) | in review — all nine review points addressed, two `[OPEN]` decisions pending |
 | A2A test server (v0.3.0 surface, e2e target) | [Kuadrant#1200](https://github.com/Kuadrant/mcp-gateway/pull/1200) | draft, CI green — held for the v1.0 confirm, then migrates + goes ready |
 | Original PoC (federated card broker) | [Kuadrant#986](https://github.com/Kuadrant/mcp-gateway/pull/986) | closed — pre-pivot, superseded by the design |
-| Spike 1 — per-method response ModeOverride | [this fork, PR #1](../../pull/1) | code + unit tests done ; real-Envoy verification next |
+| Spike 1 — per-method response ModeOverride | [this fork, PR #1](../../pull/1) | **verified against real Envoy** — BUFFERED + STREAMED both honored mid-request ; surfaced the content-length constraint (recorded in the design doc) |
 | Implementation (CRD, controller, broker, router) | this fork, branch per piece | starts after spike 1, upstreams once proven |
 
 ## The plan
@@ -150,7 +150,7 @@ gantt
     Design doc + gap analysis (1114)      :done,   p1a, 2026-06-01, 2026-06-27
     A2A test server (1200)                :done,   p1b, 2026-06-20, 2026-06-28
     section Phase 2 — build (fork)
-    Spike ModeOverride                    :active, p2a, 2026-07-01, 2026-07-08
+    Spike ModeOverride                    :done,   p2a, 2026-07-01, 2026-07-02
     CRD + controller                      :        p2b, 2026-07-08, 2026-07-21
     Broker card serving + catalog         :        p2c, 2026-07-15, 2026-07-28
     Router routing + task-ID mapping      :        p2d, 2026-07-22, 2026-08-04
@@ -162,7 +162,7 @@ gantt
 - [x] Analysis of A2A vs MCP traffic patterns (request/response vs long-running tasks, push, multi-modal artifacts)
 - [x] Design doc: ext_proc routing, federated card serving, session implications, CRD design
 - [x] Deterministic A2A test server for e2e
-- [ ] Spike: mid-request response mode change (the one piece the review flagged as *"haven't seen it done before — good to derisk early"*)
+- [x] Spike: mid-request response mode change (the one piece the review flagged as *"haven't seen it done before — good to derisk early"*) — verified, works ; one constraint found and recorded
 - [ ] `A2AAgentRegistration` CRD + controller (config fan-out per gateway namespace)
 - [ ] Broker: card cache behind a pluggable interface, RFC 9727 catalog endpoint
 - [ ] Router: path-per-agent routing, gateway-owned task IDs, buffered + streamed rewrites
@@ -206,7 +206,7 @@ Clients never see upstream task IDs. The router generates a gateway ID at the re
 
 <br>
 
-Non-streaming methods (`message/send`, `tasks/get`) need the *whole* response body in one pass to rewrite the task ID — Envoy's `BUFFERED` mode. Streaming methods (`message/stream`, `tasks/resubscribe`) need chunks as they arrive — `STREAMED`. The method is only known at the request-body phase, so the router must flip the mode **mid-request** at response-headers via ext_proc `ModeOverride`. The gateway already half-proves this (the elicitation path flips to STREAMED) ; choosing the mode per method, and the BUFFERED half, is the new bit... hence spike 1, with the finding feeding back into the design PR.
+Non-streaming methods (`message/send`, `tasks/get`) need the *whole* response body in one pass to rewrite the task ID — Envoy's `BUFFERED` mode. Streaming methods (`message/stream`, `tasks/resubscribe`) need chunks as they arrive — `STREAMED`. The method is only known at the request-body phase, so the router must flip the mode **mid-request** at response-headers via ext_proc `ModeOverride`. The gateway already half-proved this (the elicitation path flips to STREAMED) ; choosing the mode per method, and the BUFFERED half, was the new bit — and spike 1 verified it against real Envoy (Istio 1.27): both directions honored, the client received the rewritten gateway task id through a mode selected mid-request. The spike also surfaced the one constraint: a buffered rewrite changes the body length, so `content-length` must be stripped in the same response-headers response — Envoy fails closed on the mismatch otherwise. Recorded in the design doc's `message/send` section ; transcripts in [PR #1](../../pull/1).
 
 </details>
 
