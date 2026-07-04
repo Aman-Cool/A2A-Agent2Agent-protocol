@@ -2,7 +2,7 @@
 
 <img src="https://readme-typing-svg.demolab.com?font=Fira+Code&weight=500&size=22&pause=1200&center=true&vCenter=true&width=640&lines=Teaching+an+MCP+gateway+to+speak+Agent2Agent;One+policy+plane+for+MCP+%2B+A2A+traffic;Discover+%2F+route+%2F+secure+inter-agent+tasks" alt="Teaching an MCP gateway to speak Agent2Agent" />
 
-# A2A Protocol Support — Exploration Fork
+# A2A Protocol Support : Exploration Fork
 
 [![Design Doc](https://img.shields.io/badge/design%20doc-Kuadrant%20%231114-8A2BE2?logo=github)](https://github.com/Kuadrant/mcp-gateway/pull/1114)
 [![Tracking Issue](https://img.shields.io/badge/upstream%20issue-%23766-blue?logo=github)](https://github.com/Kuadrant/mcp-gateway/issues/766)
@@ -43,10 +43,10 @@ A2A is an open protocol (originally Google, donated to the Linux Foundation, now
 - **Agent Cards** .., a JSON manifest served at a well-known path describing what an agent can do (skills), how to reach it (`url` / `supportedInterfaces`), and how to authenticate (`securitySchemes`). Discovery is card-driven: a client reads the card and sends work to whatever URL it advertises.
 - **Tasks** .., the unit of work. A `message/send` creates a task that moves through a lifecycle (`submitted → working → completed/failed/canceled`, with `input-required` and `auth-required` detours) and may outlive the request that created it by hours or days. Clients poll with `tasks/get`, cancel with `tasks/cancel`.
 - **Streaming** .., `message/stream` subscribes the client to real-time task updates over SSE, carrying multi-modal artifacts (text, files, structured data) as they're produced ; `tasks/resubscribe` reconnects a dropped stream.
-- **It complements MCP, not competes** — MCP standardizes agent-to-*tool*, A2A standardizes agent-to-*agent*. A gateway that already routes one is halfway to routing both.
+- **It complements MCP, not competes** : MCP standardizes agent-to-*tool*, A2A standardizes agent-to-*agent*. A gateway that already routes one is halfway to routing both.
 
 <details>
-<summary><b>v0.3.0 → v1.0: what changed (and why this fork targets v1.0)</b></summary>
+<summary><b>v0.3.0 -> v1.0: what changed (and why this fork targets v1.0)</b></summary>
 
 <br>
 
@@ -91,7 +91,7 @@ sequenceDiagram
     Broker-->>Client: AgentCard{url: gateway/a2a/weather, skills: [...]}
 ```
 
-And invocation — the ext_proc router detects A2A by path prefix, routes to the right upstream, and isolates task IDs so clients never see upstream identifiers:
+And invocation.., the ext_proc router detects A2A by path prefix, routes to the right upstream, and isolates task IDs so clients never see upstream identifiers:
 
 ```mermaid
 sequenceDiagram
@@ -135,13 +135,13 @@ The pivot in the middle is the story worth telling: the original design routed b
 
 | Workstream | Where | State |
 |---|---|---|
-| Design doc (routing, CRD, card serving, auth, task store) | [Kuadrant#1114](https://github.com/Kuadrant/mcp-gateway/pull/1114) | in review — all nine review points addressed, two `[OPEN]` decisions pending |
-| A2A test server (v0.3.0 surface, e2e target) | [Kuadrant#1200](https://github.com/Kuadrant/mcp-gateway/pull/1200) | draft, CI green — held for the v1.0 confirm, then migrates + goes ready |
-| Original PoC (federated card broker) | [Kuadrant#986](https://github.com/Kuadrant/mcp-gateway/pull/986) | closed — pre-pivot, superseded by the design |
-| Spike 1 — per-method response ModeOverride | [this fork, PR #1](../../pull/1) | **merged** — verified against real Envoy, BUFFERED + STREAMED both honored mid-request ; surfaced the content-length constraint (recorded in the design doc) |
-| CRD + controller (`A2AAgentRegistration`) | [this fork, PR #3](../../pull/3) | **merged** — 56/56 envtest specs, live-verified grant lifecycle on Kind, upstream CI fully green ; consent-gated cross-namespace with revocation withdrawal |
-| Broker card cache + catalog, router, task store | this fork, branch per piece | next up — Tasks 7/8 onward, upstreams once proven |
-| Stretch + mentor-gated backlog | [issues #5–#10](../../issues) | deferred scope, each with its why — three self-executable, three needing mentor decisions |
+| Design doc (routing, CRD, card serving, auth, task store) | [Kuadrant#1114](https://github.com/Kuadrant/mcp-gateway/pull/1114) | in review, all nine review points addressed, two `[OPEN]` decisions pending |
+| A2A test server (v0.3.0 surface, e2e target) | [Kuadrant#1200](https://github.com/Kuadrant/mcp-gateway/pull/1200) | draft, CI green, held for the v1.0 confirm, then migrates + goes ready |
+| Original PoC (federated card broker) | [Kuadrant#986](https://github.com/Kuadrant/mcp-gateway/pull/986) | closed... pre-pivot, superseded by the design |
+| Spike 1 — per-method response ModeOverride | [this fork, PR #1](../../pull/1) | **merged** : verified against real Envoy, BUFFERED + STREAMED both honored mid-request ; surfaced the content-length constraint (recorded in the design doc) |
+| CRD + controller (`A2AAgentRegistration`) | [this fork, PR #3](../../pull/3) | **merged** : 56/56 envtest specs, live-verified grant lifecycle on Kind, upstream CI fully green ; consent-gated cross-namespace with revocation withdrawal |
+| Broker card cache + catalog, router, task store | this fork, branch per piece | next up : Tasks 7/8 onward, upstreams once proven |
+| Stretch + mentor-gated backlog | [issues #5–#10](../../issues) | deferred scope, each with its why.., three self-executable, three needing mentor decisions |
 
 ## The plan
 
@@ -165,13 +165,13 @@ gantt
 - [x] Analysis of A2A vs MCP traffic patterns (request/response vs long-running tasks, push, multi-modal artifacts)
 - [x] Design doc: ext_proc routing, federated card serving, session implications, CRD design
 - [x] Deterministic A2A test server for e2e
-- [x] Spike: mid-request response mode change (the one piece the review flagged as *"haven't seen it done before — good to derisk early"*) — verified, works ; one constraint found and recorded
-- [x] `A2AAgentRegistration` CRD + controller (config fan-out per gateway namespace) — merged ahead of plan ; immutable identity fields, ReferenceGrant-gated cross-namespace, revocation withdraws config
+- [x] Spike: mid-request response mode change (the one piece the review flagged as *"haven't seen it done before... good to derisk early"*) — verified, works ; one constraint found and recorded
+- [x] `A2AAgentRegistration` CRD + controller (config fan-out per gateway namespace); merged ahead of plan ; immutable identity fields, ReferenceGrant-gated cross-namespace, revocation withdraws config
 - [ ] Broker: card cache behind a pluggable interface, RFC 9727 catalog endpoint
 - [ ] Router: path-per-agent routing, gateway-owned task IDs, buffered + streamed rewrites
 - [ ] E2E: discovery, task execution, streaming, auth, MCP regression
 
-If the schedule slips, the must-have order is CRD/controller → card serving → routing → e2e ; streaming passthrough and metrics defer first.
+If the schedule slips, the must-have order is CRD/controller -> card serving -> routing -> e2e ; streaming passthrough and metrics defer first.
 
 ## Design decisions, and why
 
@@ -209,7 +209,7 @@ Clients never see upstream task IDs. The router generates a gateway ID at the re
 
 <br>
 
-Non-streaming methods (`message/send`, `tasks/get`) need the *whole* response body in one pass to rewrite the task ID — Envoy's `BUFFERED` mode. Streaming methods (`message/stream`, `tasks/resubscribe`) need chunks as they arrive — `STREAMED`. The method is only known at the request-body phase, so the router must flip the mode **mid-request** at response-headers via ext_proc `ModeOverride`. The gateway already half-proved this (the elicitation path flips to STREAMED) ; choosing the mode per method, and the BUFFERED half, was the new bit — and spike 1 verified it against real Envoy (Istio 1.27): both directions honored, the client received the rewritten gateway task id through a mode selected mid-request. The spike also surfaced the one constraint: a buffered rewrite changes the body length, so `content-length` must be stripped in the same response-headers response — Envoy fails closed on the mismatch otherwise. Recorded in the design doc's `message/send` section ; transcripts in [PR #1](../../pull/1).
+Non-streaming methods (`message/send`, `tasks/get`) need the *whole* response body in one pass to rewrite the task ID — Envoy's `BUFFERED` mode. Streaming methods (`message/stream`, `tasks/resubscribe`) need chunks as they arrive — `STREAMED`. The method is only known at the request-body phase, so the router must flip the mode **mid-request** at response-headers via ext_proc `ModeOverride`. The gateway already half-proved this (the elicitation path flips to STREAMED) ; choosing the mode per method, and the BUFFERED half, was the new bit, and spike 1 verified it against real Envoy (Istio 1.27): both directions honored, the client received the rewritten gateway task id through a mode selected mid-request. The spike also surfaced the one constraint: a buffered rewrite changes the body length, so `content-length` must be stripped in the same response-headers response; Envoy fails closed on the mismatch otherwise. Recorded in the design doc's `message/send` section ; transcripts in [PR #1](../../pull/1).
 
 </details>
 
@@ -218,7 +218,7 @@ Non-streaming methods (`message/send`, `tasks/get`) need the *whole* response bo
 
 <br>
 
-Card fetching (broker → agent, no client involved) uses the registration's `credentialRef`; a static credential the router can never see. Task invocation (a real client behind every call) forwards the *client's* identity — bearer pass-through or, recommended, RFC 8693 token exchange re-audienced to the agent via Authorino. Injecting the gateway's static credential into client calls would be the classic confused-deputy: the agent loses the caller's identity and a low-privilege client rides the gateway's credential. Same split MCP already enforces, for the same reason.
+Card fetching (broker → agent, no client involved) uses the registration's `credentialRef`; a static credential the router can never see. Task invocation (a real client behind every call) forwards the *client's* identity; bearer pass-through or, recommended, RFC 8693 token exchange re-audienced to the agent via Authorino. Injecting the gateway's static credential into client calls would be the classic confused-deputy: the agent loses the caller's identity and a low-privilege client rides the gateway's credential. Same split MCP already enforces, for the same reason.
 
 </details>
 
@@ -227,7 +227,7 @@ Card fetching (broker → agent, no client involved) uses the registration's `cr
 
 <br>
 
-Being able to create a registration in namespace A is not permission to expose namespace B's agent through the gateway — that would let a tenant register another tenant's backend with no signal and no veto. So a cross-namespace `targetRef` requires a `ReferenceGrant` in the route's namespace (`from: A2AAgentRegistration`, `to: HTTPRoute`), the Gateway API's own consent primitive and the same model the extension controller already uses — a boundary the maintainers held firm on for the sibling MCP fix, adopted here from day one. The controller watches grants, so consent takes effect within a reconcile in both directions ; and crucially, revoking a grant *withdraws the agent's config*, not just the status — everywhere else config is last-known-good on failure (a transient error must never rip a live agent out of the data plane), but consent is an explicit state, and consent withdrawn means exposure withdrawn. Identity fields (`agentPrefix`, `targetRef`) are immutable by CEL for the same reason: retargeting a registration would strand the previous agent's config, so replacing an agent means replacing the registration.
+Being able to create a registration in namespace A is not permission to expose namespace B's agent through the gateway — that would let a tenant register another tenant's backend with no signal and no veto. So a cross-namespace `targetRef` requires a `ReferenceGrant` in the route's namespace (`from: A2AAgentRegistration`, `to: HTTPRoute`), the Gateway API's own consent primitive and the same model the extension controller already uses.., a boundary the maintainers held firm on for the sibling MCP fix, adopted here from day one. The controller watches grants, so consent takes effect within a reconcile in both directions ; and crucially, revoking a grant *withdraws the agent's config*, not just the status, everywhere else config is last-known-good on failure (a transient error must never rip a live agent out of the data plane), but consent is an explicit state, and consent withdrawn means exposure withdrawn. Identity fields (`agentPrefix`, `targetRef`) are immutable by CEL for the same reason: retargeting a registration would strand the previous agent's config, so replacing an agent means replacing the registration.
 
 </details>
 
