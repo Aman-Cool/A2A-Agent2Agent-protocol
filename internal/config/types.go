@@ -108,8 +108,13 @@ type TokenURLElicitationConfig struct {
 	URL string `json:"url,omitempty" yaml:"url,omitempty"`
 }
 
+// GetName returns the server name; part of the namedEntry contract shared with A2AAgent.
+func (mcpServer MCPServer) GetName() string {
+	return mcpServer.Name
+}
+
 // ID returns a unique id for the a registered server
-func (mcpServer *MCPServer) ID() UpstreamMCPID {
+func (mcpServer MCPServer) ID() UpstreamMCPID {
 	return UpstreamMCPID(fmt.Sprintf("%s:%s:%s", mcpServer.Name, mcpServer.Prefix, mcpServer.Hostname))
 }
 
@@ -122,7 +127,7 @@ func normalizeState(state string) string {
 
 // ConfigChanged checks if a server's config has changed in a way that will affect the gateway.
 // This means having a different name, prefix, url, hostname, credential, state, category, hint, or tags.
-func (mcpServer *MCPServer) ConfigChanged(existingConfig MCPServer) bool {
+func (mcpServer MCPServer) ConfigChanged(existingConfig MCPServer) bool {
 	if existingConfig.Name != mcpServer.Name ||
 		existingConfig.Prefix != mcpServer.Prefix ||
 		existingConfig.URL != mcpServer.URL ||
@@ -173,7 +178,7 @@ func tokenURLElicitationChanged(a, b *TokenURLElicitationConfig) bool {
 }
 
 // Path returns the path part of the mcp url
-func (mcpServer *MCPServer) Path() (string, error) {
+func (mcpServer MCPServer) Path() (string, error) {
 	parsedURL, err := url.Parse(mcpServer.URL)
 	if err != nil {
 		return "", err
@@ -197,6 +202,7 @@ type Observer interface {
 type BrokerConfig struct {
 	Servers        []MCPServer           `json:"servers" yaml:"servers"`
 	VirtualServers []VirtualServerConfig `json:"virtualServers,omitempty" yaml:"virtualServers,omitempty"`
+	A2AAgents      []A2AAgent            `json:"a2aAgents,omitempty" yaml:"a2aAgents,omitempty"`
 }
 
 // AuthConfig holds auth configuration

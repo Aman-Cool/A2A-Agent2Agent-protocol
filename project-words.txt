@@ -1,8 +1,12 @@
 
 # New Words
+aagentregistration
+aagentregistrations
+aar
 addgroup
 adduser
 afero
+areg
 Agentic
 ALPN
 AMCP

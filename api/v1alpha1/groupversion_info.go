@@ -28,6 +28,8 @@ func addKnownTypes(s *runtime.Scheme) error {
 		&MCPVirtualServerList{},
 		&MCPGatewayExtension{},
 		&MCPGatewayExtensionList{},
+		&A2AAgentRegistration{},
+		&A2AAgentRegistrationList{},
 	)
 	metav1.AddToGroupVersion(s, GroupVersion)
 	return nil

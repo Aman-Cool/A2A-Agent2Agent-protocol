@@ -99,6 +99,11 @@ var _ = BeforeSuite(func() {
 	Expect(err).NotTo(HaveOccurred())
 	err = setupIndexExtensionToReferenceGrant(ctx, testMgr.GetFieldIndexer())
 	Expect(err).NotTo(HaveOccurred())
+	// set up field indexes for the A2AAgentRegistration controller
+	err = setupIndexA2ARegistrationToHTTPRoute(ctx, testMgr.GetFieldIndexer())
+	Expect(err).NotTo(HaveOccurred())
+	err = setupIndexA2ARegistrationToTargetNamespace(ctx, testMgr.GetFieldIndexer())
+	Expect(err).NotTo(HaveOccurred())
 
 	// start the manager's cache
 	go func() {

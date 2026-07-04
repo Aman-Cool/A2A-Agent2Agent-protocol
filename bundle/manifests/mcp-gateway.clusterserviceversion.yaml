@@ -6,7 +6,7 @@ metadata:
     capabilities: Basic Install
     categories: Integration & Delivery
     containerImage: ghcr.io/kuadrant/mcp-controller:latest
-    createdAt: "2026-06-25T14:19:00Z"
+    createdAt: "2026-07-04T10:13:29Z"
     description: An Envoy-based gateway for Model Context Protocol (MCP) servers
     operators.operatorframework.io/builder: operator-sdk-v1.38.0
     operators.operatorframework.io/project_layout: go.kubebuilder.io/v4
@@ -18,6 +18,9 @@ spec:
   apiservicedefinitions: {}
   customresourcedefinitions:
     owned:
+      - kind: A2AAgentRegistration
+        name: a2aagentregistrations.mcp.kuadrant.io
+        version: v1alpha1
       - description: Extends a Gateway API Gateway to handle MCP traffic by deploying a broker-router and configuring Envoy.
         displayName: MCP Gateway Extension
         kind: MCPGatewayExtension
@@ -121,6 +124,7 @@ spec:
             - apiGroups:
                 - mcp.kuadrant.io
               resources:
+                - a2aagentregistrations
                 - mcpgatewayextensions
                 - mcpserverregistrations
                 - mcpvirtualservers
@@ -132,18 +136,19 @@ spec:
             - apiGroups:
                 - mcp.kuadrant.io
               resources:
-                - mcpgatewayextensions/finalizers
-                - mcpvirtualservers/finalizers
-              verbs:
-                - update
-            - apiGroups:
-                - mcp.kuadrant.io
-              resources:
+                - a2aagentregistrations/status
                 - mcpgatewayextensions/status
                 - mcpserverregistrations/status
                 - mcpvirtualservers/status
               verbs:
                 - get
+                - update
+            - apiGroups:
+                - mcp.kuadrant.io
+              resources:
+                - mcpgatewayextensions/finalizers
+                - mcpvirtualservers/finalizers
+              verbs:
                 - update
             - apiGroups:
                 - networking.istio.io

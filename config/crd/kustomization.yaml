@@ -6,3 +6,4 @@ resources:
   - mcp.kuadrant.io_mcpgatewayextensions.yaml
   - mcp.kuadrant.io_mcpserverregistrations.yaml
   - mcp.kuadrant.io_mcpvirtualservers.yaml
+  - mcp.kuadrant.io_a2aagentregistrations.yaml

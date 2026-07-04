@@ -1,0 +1,17 @@
+---
+apiVersion: mcp.kuadrant.io/v1alpha1
+kind: A2AAgentRegistration
+metadata:
+  name: a2a-test-agent
+  namespace: mcp-test
+spec:
+  agentPrefix: a2a_test        # immutable; requests to /a2a/a2a_test route to this agent
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: a2a-server-route     # immutable; cross-namespace refs need a ReferenceGrant in the route's namespace
+  # agentCardURL: http://a2a-test-server.mcp-test.svc.cluster.local:9090/custom/agent-card.json
+  # credentialRef:             # broker-only credential for card discovery; secret needs
+  #   name: a2a-agent-secret   # the label mcp.kuadrant.io/secret=true
+  #   key: token
+  state: Enabled

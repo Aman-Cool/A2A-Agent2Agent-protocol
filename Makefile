@@ -217,6 +217,7 @@ install-crd: ## Install MCPServerRegistration and MCPVirtualServer CRDs
 	kubectl apply -f config/crd/mcp.kuadrant.io_mcpserverregistrations.yaml
 	kubectl apply -f config/crd/mcp.kuadrant.io_mcpvirtualservers.yaml
 	kubectl apply -f config/crd/mcp.kuadrant.io_mcpgatewayextensions.yaml
+	kubectl apply -f config/crd/mcp.kuadrant.io_a2aagentregistrations.yaml
 
 # Deploy mcp-gateway components (controller deploys broker-router via MCPGatewayExtension)
 deploy: install-crd deploy-namespaces deploy-controller ## Deploy controller to mcp-system namespace

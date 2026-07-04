@@ -97,3 +97,31 @@ stringData:
 ```
 
 Credential updates are handled automatically — when a credential secret changes, the controller rewrites the config secret and the broker re-registers affected servers on the next config reload.
+
+## A2AAgentRegistration Resource
+
+Registers an upstream A2A agent for discovery and routing through the gateway.
+
+```yaml
+apiVersion: mcp.kuadrant.io/v1alpha1
+kind: A2AAgentRegistration
+metadata:
+  name: weather-agent
+  namespace: mcp-test
+spec:
+  agentPrefix: weather      # path routing key: /a2a/weather (immutable once set)
+  targetRef:                # HTTPRoute pointing to the upstream A2A agent (immutable once set)
+    group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: weather-agent-route
+  credentialRef:            # optional; broker-only, used for agent card discovery
+    name: weather-agent-secret
+    key: token
+```
+
+Key behaviors:
+- `agentPrefix` and `targetRef` are immutable (CEL rules) — replacing an agent means replacing the registration
+- Cross-namespace `targetRef` requires a `ReferenceGrant` in the route's namespace (`from`: `A2AAgentRegistration`, `to`: `HTTPRoute`); without one the registration is `Ready=False` and no config is written. Revoking the grant withdraws the agent's config (a `ReferenceGrant` watch triggers the reconcile)
+- Credential secrets need the `mcp.kuadrant.io/secret=true` label, same as `MCPServerRegistration`
+- `Ready` means config was written, not that the agent is reachable; no discovered card content appears in status
+- Config is last-known-good: removed only on deletion and consent revocation, never on transient failures

@@ -152,7 +152,7 @@ func (r *MCPReconciler) Reconcile(ctx context.Context, req reconcile.Request) (r
 	logger.Info("target route found ", "mcpregistrationname", targetRoute.Name)
 
 	// find gateways that have accepted the httproute
-	validGateways, err := r.findValidGatewaysForMCPServer(ctx, targetRoute)
+	validGateways, err := findValidGatewaysForHTTPRoute(ctx, r.Client, targetRoute)
 	if err != nil {
 		if err := r.updateStatus(ctx, mcpsr, false, conditionReasonNotReady, err.Error()); err != nil {
 			if apierrors.IsConflict(err) {
@@ -284,9 +284,10 @@ func mcpServerName(mcp *mcpv1alpha1.MCPServerRegistration) string {
 	)
 }
 
-// findValidGatewaysForMCPServer returns the gateways the httproute targeted by the MCPServerRegistration is the child of
-func (r *MCPReconciler) findValidGatewaysForMCPServer(ctx context.Context, targetHTTPRoute *gatewayv1.HTTPRoute) ([]*gatewayv1.Gateway, error) {
-	logger := logf.FromContext(ctx).WithName("findValidGatewaysForMCPServer")
+// findValidGatewaysForHTTPRoute returns the gateways the given httproute is an accepted child of.
+// Shared by the MCPServerRegistration and A2AAgentRegistration reconcilers.
+func findValidGatewaysForHTTPRoute(ctx context.Context, c client.Client, targetHTTPRoute *gatewayv1.HTTPRoute) ([]*gatewayv1.Gateway, error) {
+	logger := logf.FromContext(ctx).WithName("findValidGatewaysForHTTPRoute")
 	var validGateways = []*gatewayv1.Gateway{}
 	if len(targetHTTPRoute.Status.Parents) > 0 {
 		// lets fetch the parents that are valid
@@ -297,7 +298,7 @@ func (r *MCPReconciler) findValidGatewaysForMCPServer(ctx context.Context, targe
 				if pr.Namespace == nil {
 					pr.Namespace = ptr.To(gatewayv1.Namespace(targetHTTPRoute.Namespace))
 				}
-				pg, err := r.getTargetGatewaysFromParentRef(ctx, pr)
+				pg, err := getGatewayFromParentRef(ctx, c, pr)
 				if err != nil {
 					if apierrors.IsNotFound(err) {
 						// log but continue we will handle no gateways found later
@@ -327,10 +328,10 @@ func (r *MCPReconciler) getTargetHTTPRoute(ctx context.Context, mcpsr *mcpv1alph
 
 }
 
-func (r *MCPReconciler) getTargetGatewaysFromParentRef(ctx context.Context, parent *gatewayv1.ParentReference) (*gatewayv1.Gateway, error) {
+func getGatewayFromParentRef(ctx context.Context, c client.Client, parent *gatewayv1.ParentReference) (*gatewayv1.Gateway, error) {
 	namespaceName := types.NamespacedName{Namespace: string(*parent.Namespace), Name: string(parent.Name)}
 	g := &gatewayv1.Gateway{}
-	if err := r.Get(ctx, namespaceName, g); err != nil {
+	if err := c.Get(ctx, namespaceName, g); err != nil {
 		return nil, fmt.Errorf("failed to get parent gateway for httproute: %w", err)
 	}
 	return g, nil
@@ -341,7 +342,7 @@ func (r *MCPReconciler) buildMCPServerConfig(ctx context.Context, targetRoute *g
 		// don't add deleting mcpserver
 		return nil, fmt.Errorf("cant generate config for deleting server %s/%s", mcpsr.Namespace, mcpsr.Name)
 	}
-	serverInfo, err := r.buildServerInfoFromHTTPRoute(ctx, targetRoute, mcpsr.Spec.Path)
+	serverInfo, err := buildServerInfoFromHTTPRoute(ctx, r.Client, targetRoute, mcpsr.Spec.Path)
 	if err != nil {
 		return nil, err
 	}
@@ -381,30 +382,11 @@ func (r *MCPReconciler) buildMCPServerConfig(ctx context.Context, targetRoute *g
 
 	// add credential env var if configured
 	if mcpsr.Spec.CredentialRef != nil {
-		secret := &corev1.Secret{}
-		err := r.DirectAPIReader.Get(ctx, types.NamespacedName{
-			Name:      mcpsr.Spec.CredentialRef.Name,
-			Namespace: mcpsr.Namespace,
-		}, secret)
+		credential, err := readLabeledCredential(ctx, r.DirectAPIReader, mcpsr.Namespace, mcpsr.Spec.CredentialRef)
 		if err != nil {
-			if apierrors.IsNotFound(err) {
-				return nil, fmt.Errorf("credential secret %s not found", mcpsr.Spec.CredentialRef.Name)
-			}
-			return nil, fmt.Errorf("failed to get credential secret: %w", err)
+			return nil, err
 		}
-
-		// check for required label
-		if secret.Labels == nil || secret.Labels[ManagedSecretLabel] != ManagedSecretValue {
-			return nil, fmt.Errorf("credential secret %s is missing required label %s=%s",
-				mcpsr.Spec.CredentialRef.Name, ManagedSecretLabel, ManagedSecretValue)
-		}
-
-		val, ok := secret.Data[mcpsr.Spec.CredentialRef.Key]
-		if !ok {
-			return nil, fmt.Errorf("credential secret %s missing key %s", mcpsr.Spec.CredentialRef.Name, mcpsr.Spec.CredentialRef.Key)
-		}
-		serverConfig.Credential = string(val)
-
+		serverConfig.Credential = credential
 	}
 
 	if mcpsr.Spec.CACertSecretRef != nil {
@@ -445,7 +427,9 @@ func (r *MCPReconciler) buildMCPServerConfig(ctx context.Context, targetRoute *g
 	return &serverConfig, nil
 }
 
-func (r *MCPReconciler) buildServerInfoFromHTTPRoute(ctx context.Context, httpRoute *gatewayv1.HTTPRoute, path string) (*ServerInfo, error) {
+// buildServerInfoFromHTTPRoute derives the upstream endpoint and routing hostname from an
+// HTTPRoute's backend. Shared by the MCPServerRegistration and A2AAgentRegistration reconcilers.
+func buildServerInfoFromHTTPRoute(ctx context.Context, c client.Client, httpRoute *gatewayv1.HTTPRoute, path string) (*ServerInfo, error) {
 	route := WrapHTTPRoute(httpRoute)
 
 	if err := route.Validate(); err != nil {
@@ -471,14 +455,14 @@ func (r *MCPReconciler) buildServerInfoFromHTTPRoute(ctx context.Context, httpRo
 
 	} else if route.IsServiceBackend() {
 		service := &corev1.Service{}
-		if err := r.Get(ctx, types.NamespacedName{
+		if err := c.Get(ctx, types.NamespacedName{
 			Name:      route.BackendName(),
 			Namespace: route.BackendNamespace(),
 		}, service); err != nil {
 			return nil, fmt.Errorf("failed to get service %s: %w", route.BackendName(), err)
 		}
 
-		endpoint, routingHostname = r.buildServiceEndpoint(route, service, path)
+		endpoint, routingHostname = buildServiceEndpoint(route, service, path)
 
 	} else {
 		return nil, fmt.Errorf("unsupported backend reference kind: %s", route.BackendKind())
@@ -494,7 +478,7 @@ func (r *MCPReconciler) buildServerInfoFromHTTPRoute(ctx context.Context, httpRo
 }
 
 // buildServiceEndpoint builds the endpoint URL and routing hostname for a Service backend
-func (r *MCPReconciler) buildServiceEndpoint(route *HTTPRouteWrapper, service *corev1.Service, path string) (endpoint, routingHostname string) {
+func buildServiceEndpoint(route *HTTPRouteWrapper, service *corev1.Service, path string) (endpoint, routingHostname string) {
 	isExternal := service.Spec.Type == corev1.ServiceTypeExternalName
 
 	var hostAndPort string
@@ -508,7 +492,7 @@ func (r *MCPReconciler) buildServiceEndpoint(route *HTTPRouteWrapper, service *c
 		hostAndPort = fmt.Sprintf("%s:%d", hostAndPort, *route.BackendPort())
 	}
 
-	protocol := r.determineProtocol(route, service, isExternal)
+	protocol := determineProtocol(route, service, isExternal)
 	endpoint = fmt.Sprintf("%s://%s%s", protocol, hostAndPort, path)
 
 	if isExternal {
@@ -528,7 +512,7 @@ func (r *MCPReconciler) buildServiceEndpoint(route *HTTPRouteWrapper, service *c
 // For external services it checks the appProtocol on the matching port.
 // For internal services it defaults to http; TLS upstreams are handled by the
 // caCertSecretRef scheme upgrade in buildMCPServerConfig.
-func (r *MCPReconciler) determineProtocol(route *HTTPRouteWrapper, service *corev1.Service, isExternal bool) string {
+func determineProtocol(route *HTTPRouteWrapper, service *corev1.Service, isExternal bool) string {
 	if isExternal {
 		for _, port := range service.Spec.Ports {
 			if route.BackendPort() != nil && port.Port == *route.BackendPort() {
@@ -612,44 +596,11 @@ func (r *MCPReconciler) updateStatus(
 	reason string,
 	message string,
 ) error {
-	condition := metav1.Condition{
-		Type:               "Ready",
-		Status:             metav1.ConditionFalse,
-		Reason:             reason,
-		Message:            message,
-		LastTransitionTime: metav1.Now(),
-	}
-
-	if ready {
-		condition.Status = metav1.ConditionTrue
-		condition.Reason = conditionReasonReady
-	}
-
-	statusChanged := false
-	found := false
-	for i, cond := range mcpsr.Status.Conditions {
-		if cond.Type == condition.Type {
-			// only update LastTransitionTime if the STATUS actually changed (True->False or False->True)
-			if cond.Status == condition.Status {
-				condition.LastTransitionTime = cond.LastTransitionTime
-			}
-			if cond.Status != condition.Status || cond.Reason != condition.Reason || cond.Message != condition.Message {
-				statusChanged = true
-			}
-			mcpsr.Status.Conditions[i] = condition
-			found = true
-			break
-		}
-	}
-	if !found {
-		mcpsr.Status.Conditions = append(mcpsr.Status.Conditions, condition)
-		statusChanged = true
-	}
-
-	if !statusChanged {
+	conditions, changed := applyReadyCondition(mcpsr.Status.Conditions, ready, reason, message)
+	mcpsr.Status.Conditions = conditions
+	if !changed {
 		return nil
 	}
-
 	return r.Status().Update(ctx, mcpsr)
 }
 

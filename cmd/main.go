@@ -145,6 +145,16 @@ func main() {
 		panic("unable to start manager : " + err.Error())
 	}
 
+	if err = (&controller.A2AReconciler{
+		Client:                mgr.GetClient(),
+		Scheme:                mgr.GetScheme(),
+		DirectAPIReader:       mgr.GetAPIReader(),
+		ConfigReaderWriter:    &configReaderWriter,
+		MCPExtFinderValidator: mcpExtFinderValidator,
+	}).SetupWithManager(ctx, mgr); err != nil {
+		panic("unable to start manager : " + err.Error())
+	}
+
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		panic("unable to start manager : " + err.Error())
 	}

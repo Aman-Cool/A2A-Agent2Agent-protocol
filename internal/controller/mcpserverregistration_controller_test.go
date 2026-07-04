@@ -202,7 +202,6 @@ func TestIsValidHostname(t *testing.T) {
 // affects the hairpin path, not the broker→upstream connection. TLS upstreams
 // are handled separately via caCertSecretRef in buildMCPServerConfig.
 func TestDetermineProtocol_InternalServiceAlwaysHTTP(t *testing.T) {
-	r := &MCPReconciler{}
 	route := WrapHTTPRoute(&gatewayv1.HTTPRoute{
 		Spec: gatewayv1.HTTPRouteSpec{
 			CommonRouteSpec: gatewayv1.CommonRouteSpec{
@@ -228,7 +227,7 @@ func TestDetermineProtocol_InternalServiceAlwaysHTTP(t *testing.T) {
 		},
 	}
 
-	got := r.determineProtocol(route, svc, false)
+	got := determineProtocol(route, svc, false)
 	if got != "http" {
 		t.Errorf("determineProtocol() = %q for internal service, want %q — "+
 			"gateway listener protocol must not affect upstream URL scheme", got, "http")
