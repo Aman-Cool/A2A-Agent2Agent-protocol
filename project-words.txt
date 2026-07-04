@@ -192,6 +192,7 @@ jsonpatch
 jsonpointer
 jsonreference
 jsonschema
+JWS
 jwtmgr
 Kagenti
 keyout
@@ -456,3 +457,10 @@ startable
 uspec
 userspecificserver
 weatherserver
+aagentregistration
+aagentregistrations
+agentgateway
+aproject
+atask
+goroutines
+kubeapilinter
