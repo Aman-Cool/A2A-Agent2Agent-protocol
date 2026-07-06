@@ -372,6 +372,35 @@ var _ = Describe("A2AAgentRegistration Controller", func() {
 			}
 		})
 
+		It("updates broker config when the referenced credential secret value changes", func() {
+			createSecret(true, "token")
+			Expect(testK8sClient.Create(ctx, newRegistrationWithCredential())).To(Succeed())
+
+			configWriter := newMockA2AConfigReaderWriter()
+			reconciler := newA2AReconciler(configWriter)
+			waitForA2ARegistrationCacheSync(ctx, a2aNamespacedName)
+
+			reconcileA2AUntil(ctx, reconciler, a2aNamespacedName, func(g Gomega) {
+				g.Expect(configWriter.upsertedAgents).NotTo(BeEmpty())
+			})
+			for _, agent := range configWriter.upsertedAgents {
+				Expect(agent.Credential).To(Equal("Bearer agent-token"))
+			}
+
+			// rotate the credential; in production the secret watch (label-predicated,
+			// mapped via findA2AAgentRegistrationsForSecret) triggers this reconcile
+			secret := &corev1.Secret{}
+			Expect(testK8sClient.Get(ctx, types.NamespacedName{Name: secretName, Namespace: "default"}, secret)).To(Succeed())
+			secret.Data["token"] = []byte("Bearer rotated-token")
+			Expect(testK8sClient.Update(ctx, secret)).To(Succeed())
+
+			reconcileA2AUntil(ctx, reconciler, a2aNamespacedName, func(g Gomega) {
+				for _, agent := range configWriter.upsertedAgents {
+					g.Expect(agent.Credential).To(Equal("Bearer rotated-token"))
+				}
+			})
+		})
+
 		It("should set Ready=False when the secret is missing the required label", func() {
 			createSecret(false, "token")
 			Expect(testK8sClient.Create(ctx, newRegistrationWithCredential())).To(Succeed())

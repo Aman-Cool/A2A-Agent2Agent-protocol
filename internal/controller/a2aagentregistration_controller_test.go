@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/utils/ptr"
@@ -180,5 +181,54 @@ func TestSetupIndexA2ARegistrationToHTTPRouteResolvesNamespace(t *testing.T) {
 	}
 	if got := indexFn(sameNs); len(got) != 1 || got[0] != "registrations/r" {
 		t.Errorf("index value = %v, want [registrations/r]", got)
+	}
+}
+
+func TestFindA2AAgentRegistrationsForSecret(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = mcpv1alpha1.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
+
+	referencing := &mcpv1alpha1.A2AAgentRegistration{
+		ObjectMeta: metav1.ObjectMeta{Name: "with-cred", Namespace: "agents"},
+		Spec: mcpv1alpha1.A2AAgentRegistrationSpec{
+			AgentPrefix:   "weather",
+			TargetRef:     mcpv1alpha1.TargetReference{Kind: "HTTPRoute", Name: "r"},
+			CredentialRef: &mcpv1alpha1.SecretReference{Name: "agent-secret"},
+		},
+	}
+	otherRef := &mcpv1alpha1.A2AAgentRegistration{
+		ObjectMeta: metav1.ObjectMeta{Name: "other-cred", Namespace: "agents"},
+		Spec: mcpv1alpha1.A2AAgentRegistrationSpec{
+			AgentPrefix:   "search",
+			TargetRef:     mcpv1alpha1.TargetReference{Kind: "HTTPRoute", Name: "r"},
+			CredentialRef: &mcpv1alpha1.SecretReference{Name: "different-secret"},
+		},
+	}
+	otherNamespace := &mcpv1alpha1.A2AAgentRegistration{
+		ObjectMeta: metav1.ObjectMeta{Name: "with-cred", Namespace: "elsewhere"},
+		Spec: mcpv1alpha1.A2AAgentRegistrationSpec{
+			AgentPrefix:   "forecast",
+			TargetRef:     mcpv1alpha1.TargetReference{Kind: "HTTPRoute", Name: "r"},
+			CredentialRef: &mcpv1alpha1.SecretReference{Name: "agent-secret"},
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(referencing, otherRef, otherNamespace).
+		Build()
+
+	r := &A2AReconciler{Client: fakeClient}
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "agent-secret", Namespace: "agents"},
+	}
+
+	requests := r.findA2AAgentRegistrationsForSecret(context.Background(), secret)
+	if len(requests) != 1 {
+		t.Fatalf("expected exactly 1 request, got %d: %v", len(requests), requests)
+	}
+	if requests[0].Name != "with-cred" || requests[0].Namespace != "agents" {
+		t.Errorf("expected agents/with-cred, got %s/%s", requests[0].Namespace, requests[0].Name)
 	}
 }
