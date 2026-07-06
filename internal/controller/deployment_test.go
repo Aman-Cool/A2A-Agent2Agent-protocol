@@ -436,6 +436,7 @@ func TestBuildBrokerRouterDeployment_InternalHost(t *testing.T) {
 		extNamespace     string
 		targetRefName    string
 		targetRefNS      string
+		gatewayClassName string
 		wantInternalHost string
 	}{
 		{
@@ -443,6 +444,7 @@ func TestBuildBrokerRouterDeployment_InternalHost(t *testing.T) {
 			extNamespace:     "team-a",
 			targetRefName:    "my-gateway",
 			targetRefNS:      "gateway-system",
+			gatewayClassName: "istio",
 			wantInternalHost: "my-gateway-istio.gateway-system.svc.cluster.local:8080",
 		},
 		{
@@ -450,7 +452,16 @@ func TestBuildBrokerRouterDeployment_InternalHost(t *testing.T) {
 			extNamespace:     "team-a",
 			targetRefName:    "my-gateway",
 			targetRefNS:      "",
+			gatewayClassName: "istio",
 			wantInternalHost: "my-gateway-istio.team-a.svc.cluster.local:8080",
+		},
+		{
+			name:             "uses gatewayClassName for openshift-default",
+			extNamespace:     "mcp-system",
+			targetRefName:    "my-gateway",
+			targetRefNS:      "gateway-system",
+			gatewayClassName: "openshift-default",
+			wantInternalHost: "my-gateway-openshift-default.gateway-system.svc.cluster.local:8080",
 		},
 	}
 
@@ -472,7 +483,7 @@ func TestBuildBrokerRouterDeployment_InternalHost(t *testing.T) {
 				},
 			}
 
-			deployment := r.buildBrokerRouterDeployment(mcpExt, "mcp.example.com", mcpExt.InternalHost(8080))
+			deployment := r.buildBrokerRouterDeployment(mcpExt, "mcp.example.com", mcpExt.InternalHost(8080, tt.gatewayClassName))
 			command := deployment.Spec.Template.Spec.Containers[0].Command
 
 			wantFlag := "--mcp-gateway-private-host=" + tt.wantInternalHost
@@ -528,7 +539,7 @@ func TestBuildBrokerRouterDeployment_PollInterval(t *testing.T) {
 				},
 			}
 
-			deployment := r.buildBrokerRouterDeployment(mcpExt, "mcp.example.com", mcpExt.InternalHost(8080))
+			deployment := r.buildBrokerRouterDeployment(mcpExt, "mcp.example.com", mcpExt.InternalHost(8080, "istio"))
 			command := deployment.Spec.Template.Spec.Containers[0].Command
 
 			if tt.wantAbsent {
@@ -576,7 +587,7 @@ func TestBuildBrokerRouterDeployment_NoRouterKeyFlag(t *testing.T) {
 		},
 	}
 
-	deployment := r.buildBrokerRouterDeployment(mcpExt, "mcp.example.com", mcpExt.InternalHost(8080))
+	deployment := r.buildBrokerRouterDeployment(mcpExt, "mcp.example.com", mcpExt.InternalHost(8080, "istio"))
 	command := deployment.Spec.Template.Spec.Containers[0].Command
 
 	for _, arg := range command {
@@ -659,9 +670,89 @@ func TestBuildBrokerRouterDeployment_LogLevel(t *testing.T) {
 				},
 			}
 
-			deployment := r.buildBrokerRouterDeployment(mcpExt, "mcp.example.com", mcpExt.InternalHost(8080))
+			deployment := r.buildBrokerRouterDeployment(mcpExt, "mcp.example.com", mcpExt.InternalHost(8080, "istio"))
 			command := deployment.Spec.Template.Spec.Containers[0].Command
 
+			var got string
+			for _, arg := range command {
+				if strings.HasPrefix(arg, "--log-level=") {
+					got = arg
+				}
+			}
+			if got != tt.want {
+				t.Errorf("log-level flag = %q, want %q (command %v)", got, tt.want, command)
+			}
+		})
+	}
+}
+
+// TestBuildBrokerRouterDeployment_SpecLogLevel verifies the broker --log-level
+// flag is emitted from spec.logLevel with correct numeric mapping, and that
+// spec.logLevel takes precedence over the operator-wide BrokerRouterLogLevel.
+func TestBuildBrokerRouterDeployment_SpecLogLevel(t *testing.T) {
+	tests := []struct {
+		name           string
+		brokerLogLevel string
+		specLogLevel   mcpv1alpha1.LogLevel
+		want           string
+	}{
+		{
+			name:         "spec.logLevel debug maps to -4",
+			specLogLevel: mcpv1alpha1.LogLevelDebug,
+			want:         "--log-level=-4",
+		},
+		{
+			name:         "spec.logLevel info maps to 0",
+			specLogLevel: mcpv1alpha1.LogLevelInfo,
+			want:         "--log-level=0",
+		},
+		{
+			name:         "spec.logLevel warn maps to 4",
+			specLogLevel: mcpv1alpha1.LogLevelWarn,
+			want:         "--log-level=4",
+		},
+		{
+			name:         "spec.logLevel error maps to 8",
+			specLogLevel: mcpv1alpha1.LogLevelError,
+			want:         "--log-level=8",
+		},
+		{
+			name:           "spec.logLevel overrides operator-wide BrokerRouterLogLevel",
+			brokerLogLevel: "-4",
+			specLogLevel:   mcpv1alpha1.LogLevelError,
+			want:           "--log-level=8",
+		},
+		{
+			name:           "operator-wide BrokerRouterLogLevel used when spec.logLevel unset",
+			brokerLogLevel: "-4",
+			want:           "--log-level=-4",
+		},
+		{
+			name: "no log-level flag when both unset",
+			want: "",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := &MCPGatewayExtensionReconciler{
+				BrokerRouterImage:    "test-image:v1",
+				BrokerRouterLogLevel: tt.brokerLogLevel,
+			}
+			mcpExt := &mcpv1alpha1.MCPGatewayExtension{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-ext",
+					Namespace: "test-ns",
+				},
+				Spec: mcpv1alpha1.MCPGatewayExtensionSpec{
+					TargetRef: mcpv1alpha1.MCPGatewayExtensionTargetReference{
+						Name:      "my-gateway",
+						Namespace: "gateway-system",
+					},
+					LogLevel: tt.specLogLevel,
+				},
+			}
+			deployment := r.buildBrokerRouterDeployment(mcpExt, "mcp.example.com", mcpExt.InternalHost(8080, "istio"))
+			command := deployment.Spec.Template.Spec.Containers[0].Command
 			var got string
 			for _, arg := range command {
 				if strings.HasPrefix(arg, "--log-level=") {
@@ -716,7 +807,7 @@ func TestBuildBrokerRouterDeployment_TrustedHeadersKey(t *testing.T) {
 				},
 			}
 
-			deployment := r.buildBrokerRouterDeployment(mcpExt, "mcp.example.com", mcpExt.InternalHost(8080))
+			deployment := r.buildBrokerRouterDeployment(mcpExt, "mcp.example.com", mcpExt.InternalHost(8080, "istio"))
 			container := deployment.Spec.Template.Spec.Containers[0]
 
 			// JWT_SESSION_SIGNING_KEY should always be present
@@ -883,7 +974,7 @@ func TestBuildBrokerRouterDeployment_ServiceAccount(t *testing.T) {
 		},
 	}
 
-	deployment := r.buildBrokerRouterDeployment(mcpExt, "mcp.example.com", mcpExt.InternalHost(8080))
+	deployment := r.buildBrokerRouterDeployment(mcpExt, "mcp.example.com", mcpExt.InternalHost(8080, "istio"))
 
 	if deployment.Spec.Template.Spec.ServiceAccountName != brokerRouterName {
 		t.Errorf("expected ServiceAccountName %q, got %q", brokerRouterName, deployment.Spec.Template.Spec.ServiceAccountName)
@@ -997,10 +1088,11 @@ func TestDerivePublicHost(t *testing.T) {
 
 func TestDerivePrivateHost(t *testing.T) {
 	tests := []struct {
-		name           string
-		spec           mcpv1alpha1.MCPGatewayExtensionSpec
-		listenerConfig *mcpv1alpha1.ListenerConfig
-		want           string
+		name             string
+		spec             mcpv1alpha1.MCPGatewayExtensionSpec
+		listenerConfig   *mcpv1alpha1.ListenerConfig
+		gatewayClassName string
+		want             string
 	}{
 		{
 			name: "HTTP listener: bare host, no scheme prefix (backwards compatible)",
@@ -1010,8 +1102,9 @@ func TestDerivePrivateHost(t *testing.T) {
 					Namespace: "gateway-system",
 				},
 			},
-			listenerConfig: &mcpv1alpha1.ListenerConfig{Port: 8080, Protocol: "HTTP"},
-			want:           "my-gw-istio.gateway-system.svc.cluster.local:8080",
+			gatewayClassName: "istio",
+			listenerConfig:   &mcpv1alpha1.ListenerConfig{Port: 8080, Protocol: "HTTP"},
+			want:             "my-gw-istio.gateway-system.svc.cluster.local:8080",
 		},
 		{
 			name: "HTTPS listener: scheme is prepended (issue #917)",
@@ -1021,8 +1114,9 @@ func TestDerivePrivateHost(t *testing.T) {
 					Namespace: "gateway-system",
 				},
 			},
-			listenerConfig: &mcpv1alpha1.ListenerConfig{Port: 443, Protocol: "HTTPS"},
-			want:           "https://my-gw-istio.gateway-system.svc.cluster.local:443",
+			gatewayClassName: "istio",
+			listenerConfig:   &mcpv1alpha1.ListenerConfig{Port: 443, Protocol: "HTTPS"},
+			want:             "https://my-gw-istio.gateway-system.svc.cluster.local:443",
 		},
 		{
 			name: "HTTPS listener with mixed-case protocol value still detected",
@@ -1032,8 +1126,21 @@ func TestDerivePrivateHost(t *testing.T) {
 					Namespace: "gateway-system",
 				},
 			},
-			listenerConfig: &mcpv1alpha1.ListenerConfig{Port: 443, Protocol: "https"},
-			want:           "https://my-gw-istio.gateway-system.svc.cluster.local:443",
+			gatewayClassName: "istio",
+			listenerConfig:   &mcpv1alpha1.ListenerConfig{Port: 443, Protocol: "https"},
+			want:             "https://my-gw-istio.gateway-system.svc.cluster.local:443",
+		},
+		{
+			name: "openshift-default gateway class uses correct service name",
+			spec: mcpv1alpha1.MCPGatewayExtensionSpec{
+				TargetRef: mcpv1alpha1.MCPGatewayExtensionTargetReference{
+					Name:      "my-gateway",
+					Namespace: "gateway-system",
+				},
+			},
+			gatewayClassName: "openshift-default",
+			listenerConfig:   &mcpv1alpha1.ListenerConfig{Port: 443, Protocol: "HTTPS"},
+			want:             "https://my-gateway-openshift-default.gateway-system.svc.cluster.local:443",
 		},
 		{
 			name: "PrivateHost override is honoured verbatim (no scheme injection)",
@@ -1044,8 +1151,9 @@ func TestDerivePrivateHost(t *testing.T) {
 				},
 				PrivateHost: "my-gw-istio.gateway-system.svc.cluster.local:8081",
 			},
-			listenerConfig: &mcpv1alpha1.ListenerConfig{Port: 443, Protocol: "HTTPS"},
-			want:           "my-gw-istio.gateway-system.svc.cluster.local:8081",
+			gatewayClassName: "istio",
+			listenerConfig:   &mcpv1alpha1.ListenerConfig{Port: 443, Protocol: "HTTPS"},
+			want:             "my-gw-istio.gateway-system.svc.cluster.local:8081",
 		},
 		{
 			name: "PrivateHost override may carry its own scheme",
@@ -1056,8 +1164,9 @@ func TestDerivePrivateHost(t *testing.T) {
 				},
 				PrivateHost: "https://custom.example.com:443",
 			},
-			listenerConfig: &mcpv1alpha1.ListenerConfig{Port: 8080, Protocol: "HTTP"},
-			want:           "https://custom.example.com:443",
+			gatewayClassName: "istio",
+			listenerConfig:   &mcpv1alpha1.ListenerConfig{Port: 8080, Protocol: "HTTP"},
+			want:             "https://custom.example.com:443",
 		},
 		{
 			name: "TCP listener (no recognised TLS): fallback to plain host (no scheme)",
@@ -1067,15 +1176,16 @@ func TestDerivePrivateHost(t *testing.T) {
 					Namespace: "gateway-system",
 				},
 			},
-			listenerConfig: &mcpv1alpha1.ListenerConfig{Port: 9090, Protocol: "TCP"},
-			want:           "my-gw-istio.gateway-system.svc.cluster.local:9090",
+			gatewayClassName: "istio",
+			listenerConfig:   &mcpv1alpha1.ListenerConfig{Port: 9090, Protocol: "TCP"},
+			want:             "my-gw-istio.gateway-system.svc.cluster.local:9090",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			mcpExt := &mcpv1alpha1.MCPGatewayExtension{Spec: tt.spec}
-			got := derivePrivateHost(mcpExt, tt.listenerConfig)
+			got := derivePrivateHost(mcpExt, tt.listenerConfig, tt.gatewayClassName)
 			if got != tt.want {
 				t.Errorf("derivePrivateHost() = %q, want %q", got, tt.want)
 			}
@@ -2027,7 +2137,7 @@ func TestBuildBrokerRouterDeployment_ReadinessProbe(t *testing.T) {
 		},
 	}
 
-	deployment := r.buildBrokerRouterDeployment(mcpExt, "mcp.example.com", mcpExt.InternalHost(8080))
+	deployment := r.buildBrokerRouterDeployment(mcpExt, "mcp.example.com", mcpExt.InternalHost(8080, "istio"))
 	probe := deployment.Spec.Template.Spec.Containers[0].ReadinessProbe
 
 	if probe == nil {

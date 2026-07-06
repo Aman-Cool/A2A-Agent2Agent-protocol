@@ -3,6 +3,7 @@
 - [MCPGatewayExtension](#mcpgatewayextension)
 - [MCPGatewayExtensionSpec](#mcpgatewayextensionspec)
 - [MCPGatewayExtensionTargetReference](#mcpgatewayextensiontargetreference)
+- [CACertBundleReference](#cacertbundlereference)
 - [TrustedHeadersKey](#trustedheaderskey)
 - [SessionStore](#sessionstore)
 - [OAuthProtectedResource](#oauthprotectedresource)
@@ -21,12 +22,14 @@
 |-----------|----------|:------------:|-----------------|
 | `targetRef` | [MCPGatewayExtensionTargetReference](#mcpgatewayextensiontargetreference) | Yes | The Gateway listener to extend with MCP protocol support |
 | `publicHost` | String | No | Overrides the public host derived from the listener hostname. Use when the listener has a wildcard and you need a specific host |
-| `privateHost` | String | No | Overrides the internal host used for hair-pinning requests back through the gateway. Defaults to `<gateway>-istio.<ns>.svc.cluster.local:<port>`, with an `https://` scheme prefix when the targeted Gateway listener uses the HTTPS protocol. The supplied value is honoured verbatim, so an operator can include a scheme (e.g. `https://my-gw:443`) or pin to a different port. |
+| `privateHost` | String | No | Overrides the internal host used for hair-pinning requests back through the gateway. Defaults to `<gateway>-<gatewayClassName>.<ns>.svc.cluster.local:<port>`, with an `https://` scheme prefix when the targeted Gateway listener uses the HTTPS protocol. The supplied value is honoured verbatim, so an operator can include a scheme (e.g. `https://my-gw:443`) or pin to a different port. |
 | `backendPingIntervalSeconds` | Integer | No | How often (in seconds) the broker pings upstream MCP servers. Min: 10, Max: 7200, Default: 60 |
 | `trustedHeadersKey` | [TrustedHeadersKey](#trustedheaderskey) | No | Configures trusted-header key pair for JWT-based tool filtering. When set, the public key secret is injected into the broker deployment via the `TRUSTED_HEADER_PUBLIC_KEY` env var |
 | `httpRouteManagement` | String | No | Controls whether the operator manages the gateway HTTPRoute. `Enabled` (default): creates and manages the HTTPRoute. `Disabled`: does not create an HTTPRoute. Disabling does not delete a previously created route |
+| `logLevel` | String | No | Controls the broker-router log verbosity. Maps to the broker's `--log-level` flag: `debug=-4`, `info=0`, `warn=4`, `error=8`. When unset, the operator-wide `BROKER_ROUTER_LOG_LEVEL` default is used if configured. Accepted values: `debug`, `info`, `warn`, `error` |
 | `sessionStore` | [SessionStore](#sessionstore) | No | References a secret for redis-based session storage. When not set, in-memory session storage is used |
 | `urlElicitation` | String | No | Controls URL-based token elicitation. `Enabled`: creates a separate `/tokens` HTTPRoute and passes `--enable-url-elicitation` to the broker. `Disabled` (default): no `/tokens` route is created |
+| `caCertBundleRef` | [CACertBundleReference](#cacertbundlereference) | No | References a Secret containing a PEM-encoded CA certificate bundle used as the base trust pool for all upstream MCP server connections. Per-server `caCertSecretRef` on MCPServerRegistration appends to this pool. The Secret must have the label `mcp.kuadrant.io/secret: "true"` and must not exceed 256 KiB |
 | `oauthProtectedResource` | [OAuthProtectedResource](#oauthprotectedresource) | No | Configures the OAuth protected resource metadata served at `/.well-known/oauth-protected-resource`. When set, the controller injects `OAUTH_*` env vars into the broker-router deployment |
 
 ## MCPGatewayExtensionTargetReference
@@ -38,6 +41,17 @@
 | `name` | String | Yes | Name of the target Gateway |
 | `namespace` | String | No | Namespace of the target Gateway. Defaults to the MCPGatewayExtension namespace. Cross-namespace references require a ReferenceGrant |
 | `sectionName` | String | Yes | Name of a listener on the target Gateway. The controller reads the listener's port and hostname to configure the MCP Gateway instance |
+
+## CACertBundleReference
+
+| **Field** | **Type** | **Required** | **Description** |
+|-----------|----------|:------------:|-----------------|
+| `name` | String | Yes | Name of the Secret containing the PEM-encoded CA certificate bundle. The Secret must exist in the MCPGatewayExtension namespace and must have the label `mcp.kuadrant.io/secret: "true"` |
+| `key` | String | No | Key within the Secret data that contains the PEM data. Default: `ca.crt` |
+
+The gateway CA bundle is written once to the config Secret as `gatewayCACertPEM`, replacing N per-server copies with a single entry. The broker loads it as the base trust pool for all upstream connections. Per-server `caCertSecretRef` on MCPServerRegistration appends additional CAs for backends with unique certificates.
+
+Trust pool hierarchy: system roots, then gateway CA bundle (if set), then per-server CA (if set). Each layer is additive.
 
 ## TrustedHeadersKey
 
@@ -82,5 +96,5 @@
 | `InvalidMCPGatewayExtension` | Invalid configuration detected |
 | `ReferenceGrantRequired` | A ReferenceGrant is missing for a cross-namespace Gateway reference |
 | `DeploymentNotReady` | The broker-router deployment is not ready |
-| `SecretNotFound` | A referenced secret is missing (trusted headers or session store) |
-| `SecretInvalid` | A referenced secret lacks the required data entry (`key` for trusted headers, `CACHE_CONNECTION_STRING` for session store) |
+| `SecretNotFound` | A referenced secret is missing (trusted headers, session store, or CA cert bundle) |
+| `SecretInvalid` | A referenced secret lacks the required data entry (`key` for trusted headers, `CACHE_CONNECTION_STRING` for session store) or contains invalid PEM data (CA cert bundle) |

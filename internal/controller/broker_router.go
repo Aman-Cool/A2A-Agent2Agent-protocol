@@ -71,6 +71,16 @@ var managedEnvVarNames = []string{
 	"OAUTH_SCOPES_SUPPORTED",
 }
 
+// logLevelFlagValues maps spec.logLevel to the numeric value expected by the
+// broker-router's --log-level flag, following Go's slog level convention
+// (debug=-4, info=0, warn=4, error=8).
+var logLevelFlagValues = map[mcpv1alpha1.LogLevel]string{
+	mcpv1alpha1.LogLevelDebug: "-4",
+	mcpv1alpha1.LogLevelInfo:  "0",
+	mcpv1alpha1.LogLevelWarn:  "4",
+	mcpv1alpha1.LogLevelError: "8",
+}
+
 func brokerRouterLabels() map[string]string {
 	return map[string]string{
 		labelAppName:   brokerRouterName,
@@ -93,7 +103,9 @@ func (r *MCPGatewayExtensionReconciler) buildBrokerRouterDeployment(mcpExt *mcpv
 	if mcpExt.Spec.URLElicitation == mcpv1alpha1.URLElicitationEnabled {
 		command = append(command, "--enable-url-elicitation")
 	}
-	if r.BrokerRouterLogLevel != "" {
+	if v, ok := logLevelFlagValues[mcpExt.Spec.LogLevel]; ok {
+		command = append(command, "--log-level="+v)
+	} else if r.BrokerRouterLogLevel != "" {
 		command = append(command, "--log-level="+r.BrokerRouterLogLevel)
 	}
 
@@ -331,11 +343,11 @@ func derivePublicHost(listenerConfig *mcpv1alpha1.ListenerConfig, annotationOver
 // port). Otherwise the host is computed from the targetRef and listener port,
 // and an https:// scheme prefix is added when the listener is HTTPS so the
 // broker hairpin doesn't send plain HTTP to a TLS-only port (issue #917).
-func derivePrivateHost(mcpExt *mcpv1alpha1.MCPGatewayExtension, listenerConfig *mcpv1alpha1.ListenerConfig) string {
+func derivePrivateHost(mcpExt *mcpv1alpha1.MCPGatewayExtension, listenerConfig *mcpv1alpha1.ListenerConfig, gatewayClassName string) string {
 	if mcpExt.Spec.PrivateHost != "" {
 		return mcpExt.Spec.PrivateHost
 	}
-	host := mcpExt.InternalHost(listenerConfig.Port)
+	host := mcpExt.InternalHost(listenerConfig.Port, gatewayClassName)
 	// listener.Protocol is the Gateway API protocol string, e.g. "HTTPS".
 	if strings.EqualFold(listenerConfig.Protocol, "HTTPS") {
 		return "https://" + host
@@ -343,13 +355,13 @@ func derivePrivateHost(mcpExt *mcpv1alpha1.MCPGatewayExtension, listenerConfig *
 	return host
 }
 
-func (r *MCPGatewayExtensionReconciler) reconcileBrokerRouter(ctx context.Context, mcpExt *mcpv1alpha1.MCPGatewayExtension, listenerConfig *mcpv1alpha1.ListenerConfig) (bool, error) {
+func (r *MCPGatewayExtensionReconciler) reconcileBrokerRouter(ctx context.Context, mcpExt *mcpv1alpha1.MCPGatewayExtension, listenerConfig *mcpv1alpha1.ListenerConfig, gatewayClassName string) (bool, error) {
 	// derive values from listener config before building resources
 	publicHost, err := derivePublicHost(listenerConfig, mcpExt.Spec.PublicHost)
 	if err != nil {
 		return false, newValidationError(mcpv1alpha1.ConditionReasonInvalid, err.Error())
 	}
-	internalHost := derivePrivateHost(mcpExt, listenerConfig)
+	internalHost := derivePrivateHost(mcpExt, listenerConfig, gatewayClassName)
 
 	// reconcile service account (must exist before deployment)
 	serviceAccount := r.buildBrokerRouterServiceAccount(mcpExt)
