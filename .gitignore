@@ -56,3 +56,6 @@ config/e2e/gateway-1.yaml
 config/e2e/gateway-2.yaml
 config/e2e/gateway-shared.yaml
 config/e2e/kustomization.yaml
+
+# locally-compiled test-server binaries (images build these in Docker; never commit them)
+/tests/servers/custom-response-server/custom-response-server
