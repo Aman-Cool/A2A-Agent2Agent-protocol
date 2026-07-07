@@ -58,18 +58,18 @@ make spell
 - `config/test-servers/kustomization.yaml` (updated)
 
 **Acceptance criteria:**
-- [ ] `GET /.well-known/a2a` (v1.0 well-known path) returns a valid v1.0 AgentCard (`supportedInterfaces` carrying the server's own address, named `security_schemes`) configurable via `AGENT_NAME`, `SKILLS`, `AGENT_PREFIX` env vars; optionally JWS-signed to exercise the verbatim-serving path
+- [ ] `GET /.well-known/agent-card.json` (v1.0 well-known path) returns a valid v1.0 AgentCard (`supportedInterfaces` carrying the server's own address, named `securitySchemes`) configurable via `AGENT_NAME`, `SKILLS`, `AGENT_PREFIX` env vars; optionally JWS-signed to exercise the verbatim-serving path
 - [ ] `POST /a2a` dispatches `SendMessage` (blocking by default in v1.0), `GetTask`, `CancelTask`, `SubscribeToTask`
-- [ ] SSE streaming via `SendStreamingMessage` (the v1.0 streaming method, a distinct JSON-RPC method — NOT `SendMessage` + `Accept`): three `working` events then `completed`, task IDs in `result.id`/`result.taskId`
+- [ ] SSE streaming via `SendStreamingMessage` (the v1.0 streaming method, a distinct JSON-RPC method — NOT `SendMessage` + `Accept`): three `working` events then `completed`, task IDs at the envelope identity field (the task `id`, then `taskId` on updates)
 - [ ] Kubernetes manifests follow `config/test-servers/server1-deployment.yaml` pattern
 - [ ] Server added to `config/test-servers/kustomization.yaml`
 
 **Verification:**
 ```bash
-curl http://a2a-test-server.mcp-test.svc.cluster.local:9090/.well-known/a2a
+curl http://a2a-test-server.mcp-test.svc.cluster.local:9090/.well-known/agent-card.json
 curl -X POST http://a2a-test-server.mcp-test.svc.cluster.local:9090/a2a \
   -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","id":1,"method":"SendMessage","params":{"message":{"role":"user","parts":[{"kind":"text","text":"hello"}]}}}'
+  -d '{"jsonrpc":"2.0","id":1,"method":"SendMessage","params":{"message":{"role":"user","parts":[{"text":"hello"}]}}}'
 ```
 
 ---
@@ -142,6 +142,7 @@ kubectl logs -n mcp-system deployment/mcp-gateway-controller
 - [ ] `buildA2AAgentConfig()` handles `IsHostnameBackend()` and `IsServiceBackend()` using existing helpers
 - [ ] `UpsertA2AAgent()` called for each valid MCPGatewayExtension namespace
 - [ ] Status conditions: `Ready=True` (reason `Ready`) when config is written, mirroring `MCPServerRegistration` — `Ready` is not a promise the agent is reachable or serving, and no discovered card content (skills, card fields) appears in status
+- [ ] `state: Disabled`: config is still written carrying `state: Disabled` (the broker acts on the flag), and status is `Ready=False, Reason=Disabled`, mirroring `MCPServerRegistration`; re-enabling restores `Ready=True`
 - [ ] Controller integration tests: new registration → Ready=True; missing HTTPRoute → Ready=False; deletion removes config; cross-namespace `targetRef` with a `ReferenceGrant` resolves and reconciles; cross-namespace without a grant → Ready=False, no config written; revoking the grant withdraws previously written config
 
 **Verification:**
@@ -187,7 +188,7 @@ make test-unit
 **Acceptance criteria:**
 - [ ] `a2a.Broker` implements `config.Observer`: `OnConfigChange()` calls `SetAgents(cfg.ListA2AAgents())`
 - [ ] `ServeAPICatalog()` has OTel span `"a2a.ServeAPICatalog"` with `agent.count` attribute, following `HandleToolCall()` pattern
-- [ ] `A2AAgentManager` caches the upstream card with a ticker refresh (mirroring `MCPManager`), serving stale-on-error; `ServeAgentCard()` serves the cached card with its `url` rewritten to the gateway path (`/a2a/{namespace}/{prefix}`) — not a per-request upstream proxy
+- [ ] `A2AAgentManager` caches the upstream card with a ticker refresh (mirroring `MCPManager`), serving stale-on-error; `ServeAgentCard()` serves the cached card **verbatim** — a signed card's JWS signature must survive byte-for-byte, so the card is not rewritten; the catalog is what advertises the gateway path — not a per-request upstream proxy
 - [ ] Card refresh is poll-only (A2A has no card-change push): ticker re-fetch with conditional GET (`If-None-Match`/`If-Modified-Since`) + `version`/SHA-256 change detection; act only on change (in-memory cache swap under RWMutex, no Secret write); staleness bound = ticker interval (reuse `managerTickerInterval`, default 1 min)
 - [ ] No discovered card content is surfaced in registration status (`Ready` = config written); the broker's ticker refresh is the only live card sync
 - [ ] `credentialRef` is used by the broker ONLY for the card fetch (discovery), never injected into client `SendMessage`/`tasks/*` (router has no `credentialRef` access; invocation auth = forwarded client bearer or RFC 8693 token exchange via AuthPolicy)
@@ -213,7 +214,7 @@ make test-unit
 
 **Acceptance criteria:**
 - [ ] `a2aBroker` initialized in `main.go` and registered as observer: `cfg.RegisterObserver(a2aBroker)`
-- [ ] `/.well-known/api-catalog` (Content-Type `application/linkset+json`) and `/a2a/{namespace}/{prefix}/.well-known/a2a` registered in `setUpHTTPServer()` after `/.well-known/oauth-protected-resource`
+- [ ] `/.well-known/api-catalog` (Content-Type `application/linkset+json`) and `/a2a/{namespace}/{prefix}/.well-known/agent-card.json` registered in `setUpHTTPServer()` after `/.well-known/oauth-protected-resource`
 - [ ] `A2ABroker a2a.Broker` field added to `ExtProcServer` struct in `createRouter()`
 - [ ] `make build` passes
 
@@ -333,7 +334,7 @@ make test-unit
 
 **Acceptance criteria:**
 - [ ] `a2aSSEPassthrough` struct with `Process(ctx, chunk []byte) []byte` and `Flush(ctx) []byte`
-- [ ] `Process()` rewrites upstream→gateway task IDs across `result.id`, `result.taskId`, and `history[].taskId` in `data:` lines (the field varies by event kind)
+- [ ] `Process()` rewrites upstream→gateway task IDs at the streaming event envelope identity field in `data:` lines — the task `id` on the initial `task` event, `taskId` on `statusUpdate`/`artifactUpdate` (v1.0 has no `kind` discriminator; the variant is which member is present)
 - [ ] Envelope-only parsing: unmarshal the JSON-RPC envelope + result identity fields only; keep `status`/`artifact`/`history`/`parts` as `json.RawMessage` — never decode `FilePart.file.bytes`/`DataPart.data`; `history[].taskId` rewrite is a scoped replace within the history raw bytes; cost is O(envelope), not O(artifact)
 - [ ] `HandleResponseHeaders()` sets `ModeOverride ResponseBodyMode=STREAMED` when `isA2A && isStreamingA2AMethod()` (`SendStreamingMessage`/`SubscribeToTask`)
 - [ ] Non-streaming `SendMessage`/`GetTask` use a separate BUFFERED full-body rewrite path; an A2A flag gates `Process()` continuing into `ResponseBody` (today it only continues when `rewriter != nil`)
@@ -363,7 +364,7 @@ curl -X POST http://mcp.127-0-0-1.sslip.io:8001/a2a \
 - `tests/e2e/test_cases.md` (updated)
 
 **Acceptance criteria:**
-- [ ] Agent card discovery: `GET /.well-known/api-catalog` returns an RFC 9727 catalog (RFC 9264 Linkset) with agent links; `GET /a2a/mcp-test/weather/.well-known/a2a` returns the test server's agent card with its `url` rewritten to the gateway path (`/a2a/mcp-test/weather`)
+- [ ] Agent card discovery: `GET /.well-known/api-catalog` returns an RFC 9727 catalog (RFC 9264 Linkset) with agent links; `GET /a2a/mcp-test/weather/.well-known/agent-card.json` returns the test server's agent card served verbatim (a signed card's JWS signature intact), with the catalog link — not a rewritten card URL — routing the client to the gateway path
 - [ ] Task send: `SendMessage` to `/a2a/{namespace}/{prefix}` routes to correct upstream, returns gateway task ID
 - [ ] Task get: `GetTask` with gateway task ID returns upstream result
 - [ ] Task cancel: `CancelTask` propagates to upstream, returns canceled state
@@ -385,7 +386,7 @@ ginkgo -v --label-filter="A2A" ./tests/e2e/...
 - `tests/e2e/a2a_task_test.go` (extend)
 
 **Acceptance criteria:**
-- [ ] Streaming: `SendStreamingMessage` delivers SSE chunks with gateway task IDs (across `result.id`/`result.taskId`)
+- [ ] Streaming: `SendStreamingMessage` delivers SSE chunks with gateway task IDs at the envelope identity field (task `id`, then `taskId` on updates)
 - [ ] Auth: request without a valid OAuth bearer returns 401 (AuthPolicy) before reaching upstream
 - [ ] Unknown path: `SendMessage` to unregistered `/a2a/{namespace}/{prefix}` returns JSON-RPC `-32602`
 - [ ] MCP regression: `tools/list` and `tools/call` work correctly after all A2A changes

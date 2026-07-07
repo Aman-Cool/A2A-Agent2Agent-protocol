@@ -10,7 +10,7 @@
 When an `A2AAgentRegistration` is created with a valid HTTPRoute pointing to an A2A test server,
 the gateway's `GET /.well-known/api-catalog` endpoint should return an RFC 9727 catalog (RFC 9264
 Linkset) containing a link to the agent's endpoint at `/a2a/{namespace}/{prefix}`. A subsequent
-`GET /a2a/{namespace}/{prefix}/.well-known/a2a` should return the upstream agent's Agent Card served
+`GET /a2a/{namespace}/{prefix}/.well-known/agent-card.json` should return the upstream agent's Agent Card served
 (cached) by the gateway **verbatim** — a signed card's JWS signature must survive byte-for-byte, so the
 gateway does not rewrite it; the catalog link is what routes the client to the gateway path. The catalog
 entry should not appear until the registration is Ready.
@@ -46,10 +46,10 @@ receive a response reflecting the canceled task state.
 ### [Happy,A2A] SSE streaming delivers task updates with consistent gateway task IDs
 
 When a client sends a `SendStreamingMessage` request (the v1.0 streaming method), the gateway should
-deliver SSE chunks in real time. All `data:` events should contain the gateway task ID (not the
-upstream task ID) across `result.id`, `result.taskId`, and `history[].taskId`. The stream should
-complete when the upstream agent sends a terminal state (`completed`, `failed`, `canceled`, or
-`rejected`) with `final: true`.
+deliver SSE chunks in real time. Every `data:` event should carry the gateway task ID (not the upstream
+task ID) at its envelope identity field — the task's `id` on the initial `task` event, `taskId` on
+`statusUpdate`/`artifactUpdate` events. The stream should complete when the upstream agent sends a
+terminal state (`completed`, `failed`, `canceled`, or `rejected`).
 
 ---
 
@@ -101,16 +101,6 @@ When an AuthPolicy with per-agent RBAC is attached to the `/a2a` route and a cli
 bearer whose `resource_access['a2a'].roles` does not include `agent:{prefix}`, Authorino should return
 403 (using the router-set `x-a2a-agent` header) before the request reaches the upstream agent. A client
 whose token includes the role is routed normally.
-
----
-
-### [A2A] Agent Card skills are filtered by x-a2a-authorized (visibility, not enforcement)
-
-When Authorino signs an `x-a2a-authorized` header with `allowed-capabilities.skills` listing a subset
-of an agent's skills, `GET /a2a/{namespace}/{prefix}/.well-known/a2a` returns a card containing only the
-listed skills. With no `x-a2a-authorized` header (enforcement off), the full card is returned; a
-tampered/unsigned header is rejected (fail closed). Note this controls card visibility only — it does
-not block `SendMessage` to the agent.
 
 ---
 
