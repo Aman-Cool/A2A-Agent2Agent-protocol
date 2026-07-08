@@ -266,6 +266,54 @@ var _ = Describe("A2AAgentRegistration Controller", func() {
 			}, testTimeout, testRetryInterval).Should(Succeed())
 		})
 
+		It("cleans up config on deletion even when the target route is already gone", func() {
+			// deletion keys on namespace/name and scrubs every managed config secret, so
+			// it must not depend on resolving targetRef — otherwise deleting the route first
+			// would strand the config with no way to find where it was written. This pins
+			// that resilience against a future "resolve targetRef then clean up" refactor.
+			a2areg := createTestA2AAgentRegistration(resourceName, "default", httpRouteName, "weather")
+			Expect(testK8sClient.Create(ctx, a2areg)).To(Succeed())
+
+			configWriter := newMockA2AConfigReaderWriter()
+			reconciler := newA2AReconciler(configWriter)
+			waitForA2ARegistrationCacheSync(ctx, a2aNamespacedName)
+
+			reconcileA2AUntil(ctx, reconciler, a2aNamespacedName, func(g Gomega) {
+				g.Expect(configWriter.upsertedAgents).NotTo(BeEmpty())
+			})
+
+			// tear the whole target context down BEFORE deleting the registration
+			deleteTestHTTPRoute(ctx, httpRouteName, "default")
+			forceDeleteTestMCPGatewayExtension(ctx, extName, "default")
+			deleteTestGateway(ctx, gatewayName, "default")
+
+			resource := &mcpv1alpha1.A2AAgentRegistration{}
+			Expect(testK8sClient.Get(ctx, a2aNamespacedName, resource)).To(Succeed())
+			Expect(testK8sClient.Delete(ctx, resource)).To(Succeed())
+
+			Eventually(func(g Gomega) {
+				cached := &mcpv1alpha1.A2AAgentRegistration{}
+				err := testIndexedClient.Get(ctx, a2aNamespacedName, cached)
+				if errors.IsNotFound(err) {
+					return
+				}
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(cached.DeletionTimestamp).NotTo(BeNil())
+			}, testTimeout, testRetryInterval).Should(Succeed())
+
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: a2aNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			// cleanup still happened, keyed on namespace/name, target absence notwithstanding
+			Expect(configWriter.removedAgents).To(ContainElement("default/" + resourceName))
+
+			Eventually(func(g Gomega) {
+				deleted := &mcpv1alpha1.A2AAgentRegistration{}
+				err := testK8sClient.Get(ctx, a2aNamespacedName, deleted)
+				g.Expect(errors.IsNotFound(err)).To(BeTrue())
+			}, testTimeout, testRetryInterval).Should(Succeed())
+		})
+
 		It("should set Ready=False with reason Disabled when state is Disabled", func() {
 			a2areg := createTestA2AAgentRegistration(resourceName, "default", httpRouteName, "weather")
 			a2areg.Spec.State = mcpv1alpha1.ServerStateDisabled

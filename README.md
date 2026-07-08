@@ -58,8 +58,9 @@ The spec moved under us mid-project, and the maintainer review agreed there's li
 | Stream | `message/stream` | `SendStreamingMessage` |
 | Task fetch / cancel | `tasks/get` / `tasks/cancel` | `GetTask` / `CancelTask` (+ `ListTasks`) |
 | Resubscribe | `tasks/resubscribe` | `SubscribeToTask` |
-| Well-known card path | `/.well-known/agent-card.json` | `/.well-known/a2a` |
+| Well-known card path | `/.well-known/agent-card.json` | `/.well-known/agent-card.json` (unchanged) |
 | Card endpoint field | top-level `url` | `supportedInterfaces[]` (+ `tenant` for multi-agent hosting) |
+| Security fields | — | camelCase JSON: `securitySchemes` map, `securityRequirements` |
 | Card integrity | unsigned | JWS signatures over the JCS-canonicalized card |
 | Canonical definition | JSON schema | protobuf (`a2a.proto`) ; JSON-RPC binding uses PascalCase methods |
 
@@ -73,7 +74,7 @@ The durable value isn't protocol plumbing.., it's that inter-agent traffic picks
 
 ## How it works
 
-Two flows carry the whole story. Discovery, the broker serves each registered agent's card with its `url` rewritten to the gateway path, which is the load-bearing trick that makes *unmodified* A2A clients route through the gateway:
+Two flows carry the whole story. Discovery, the broker serves each registered agent's signed card **verbatim** and advertises the gateway path through an RFC 9727 catalog, so *unmodified* A2A clients route through the gateway without the card's signature ever being touched:
 
 ```mermaid
 sequenceDiagram
@@ -84,11 +85,11 @@ sequenceDiagram
 
     Client->>Gateway: GET /.well-known/api-catalog
     Gateway->>Broker: (RFC 9727 catalog)
-    Broker-->>Client: links: [/a2a/weather, /a2a/search]
-    Client->>Gateway: GET /a2a/weather/.well-known/agent-card.json
+    Broker-->>Client: links: [/a2a/mcp-test/weather, /a2a/mcp-test/search]
+    Client->>Gateway: GET /a2a/mcp-test/weather/.well-known/agent-card.json
     Broker->>Agent: periodic card refresh (ticker, conditional GET)
-    Note over Broker: rewrite card url → gateway path<br/>client now self-routes through the gateway
-    Broker-->>Client: AgentCard{url: gateway/a2a/weather, skills: [...]}
+    Note over Broker: serve the signed card verbatim<br/>(a rewrite would void the JWS signature)
+    Broker-->>Client: AgentCard (signature intact) — catalog link routes to the gateway
 ```
 
 And invocation.., the ext_proc router detects A2A by path prefix, routes to the right upstream, and isolates task IDs so clients never see upstream identifiers:
@@ -127,19 +128,20 @@ timeline
     July 1 : Revised design up ; two OPEN decisions remain (v1.0 confirm, namespace-qualified paths)
     July 2 : This fork opens for business — spike 1, per-method response ModeOverride : Verified same day against real Envoy — BUFFERED + STREAMED honored mid-request, content-length constraint found + recorded
     July 5 : CRD + controller merged (PR 3) — 56/56 envtest specs, live-verified on Kind, full upstream CI green : Cross-namespace registration gated behind ReferenceGrant consent ; revoking a grant withdraws the config, not just the status
+    July 7 : Both open design questions resolved by the maintainers — v1.0 is the target, and paths are namespace-qualified (/a2a/{namespace}/{prefix}) to kill cross-namespace collisions : design doc migrated to the v1.0 surface (method names, well-known path, JWS-signed cards served verbatim)
 ```
 
-The pivot in the middle is the story worth telling: the original design routed by reading a `skill` out of the `message/send` body, and the spec pass revealed that field **doesn't exist** — `MessageSendParams` is `{message, configuration, metadata}`, skills live only in the card. So routing moved to a path per agent (`/a2a/{prefix}`), which is also what [agentgateway](https://agentgateway.dev) converged on, and which turns out to be Kuadrant-optimal anyway.., policies attach to HTTPRoutes, and a path per agent means an *operator can attach a distinct AuthPolicy and RateLimitPolicy per agent*. The protocol forced a change that made the design better.
+The pivot in the middle is the story worth telling: the original design routed by reading a `skill` out of the `message/send` body, and the spec pass revealed that field **doesn't exist** — `MessageSendParams` is `{message, configuration, metadata}`, skills live only in the card. So routing moved to a path per agent (`/a2a/{namespace}/{prefix}`), which is also what [agentgateway](https://agentgateway.dev) converged on, and which turns out to be Kuadrant-optimal anyway.., policies attach to HTTPRoutes, and a path per agent means an *operator can attach a distinct AuthPolicy and RateLimitPolicy per agent*. The protocol forced a change that made the design better.
 
 ## Where everything lives
 
 | Workstream | Where | State |
 |---|---|---|
-| Design doc (routing, CRD, card serving, auth, task store) | [Kuadrant#1114](https://github.com/Kuadrant/mcp-gateway/pull/1114) | in review, all nine review points addressed, two `[OPEN]` decisions pending |
-| A2A test server (v0.3.0 surface, e2e target) | [Kuadrant#1200](https://github.com/Kuadrant/mcp-gateway/pull/1200) | draft, CI green, held for the v1.0 confirm, then migrates + goes ready |
+| Design doc (routing, CRD, card serving, auth, task store) | [Kuadrant#1114](https://github.com/Kuadrant/mcp-gateway/pull/1114) | in review, all review points addressed ; both big decisions now settled (v1.0 target + namespace-qualified paths), doc migrated to v1.0 ; two smaller items still open (session model, discovery convention) |
+| A2A test server (e2e target) | [Kuadrant#1200](https://github.com/Kuadrant/mcp-gateway/pull/1200) | draft, CI green ; v1.0 now confirmed, so the v1.0 surface migration is the next step before it goes ready |
 | Original PoC (federated card broker) | [Kuadrant#986](https://github.com/Kuadrant/mcp-gateway/pull/986) | closed... pre-pivot, superseded by the design |
 | Spike 1 — per-method response ModeOverride | [this fork, PR #1](../../pull/1) | **merged** : verified against real Envoy, BUFFERED + STREAMED both honored mid-request ; surfaced the content-length constraint (recorded in the design doc) |
-| CRD + controller (`A2AAgentRegistration`) | [this fork, PR #3](../../pull/3) | **merged** : 56/56 envtest specs, live-verified grant lifecycle on Kind, upstream CI fully green ; consent-gated cross-namespace with revocation withdrawal |
+| CRD + controller (`A2AAgentRegistration`) | [this fork, PR #3](../../pull/3) | **merged** : 56/56 envtest specs, live-verified grant lifecycle on Kind, upstream CI fully green ; consent-gated cross-namespace with revocation withdrawal ; follow-up test/doc hardening in flight (#14, #15) |
 | Broker card cache + catalog, router, task store | this fork, branch per piece | next up : Tasks 7/8 onward, upstreams once proven |
 | Stretch + mentor-gated backlog | [issues #5–#10](../../issues) | deferred scope, each with its why.., three self-executable, three needing mentor decisions |
 
@@ -168,7 +170,7 @@ gantt
 - [x] Spike: mid-request response mode change (the one piece the review flagged as *"haven't seen it done before... good to derisk early"*) — verified, works ; one constraint found and recorded
 - [x] `A2AAgentRegistration` CRD + controller (config fan-out per gateway namespace); merged ahead of plan ; immutable identity fields, ReferenceGrant-gated cross-namespace, revocation withdraws config
 - [ ] Broker: card cache behind a pluggable interface, RFC 9727 catalog endpoint
-- [ ] Router: path-per-agent routing, gateway-owned task IDs, buffered + streamed rewrites
+- [ ] Router: namespace-qualified path-per-agent routing, gateway-owned task IDs, buffered + streamed rewrites
 - [ ] E2E: discovery, task execution, streaming, auth, MCP regression
 
 If the schedule slips, the must-have order is CRD/controller -> card serving -> routing -> e2e ; streaming passthrough and metrics defer first.
@@ -180,18 +182,18 @@ If the schedule slips, the must-have order is CRD/controller -> card serving -> 
 
 <br>
 
-The protocol never routes by skill... no `skill` field exists in `message/send` (§7.1.1, both spec versions). The two honest options were a path per agent or a custom header ; a header only works for clients we've specifically taught about the gateway, while a path works for *any* stock A2A client, because clients already POST to whatever URL the agent card advertises. The card the gateway serves points at `/a2a/{prefix}`; so the routing key lives in the card, not in anything the client has to be told. It's also what agentgateway (Linux Foundation) does, and it gives each agent its own HTTPRoute for per-agent policy attachment.
+The protocol never routes by skill... no `skill` field exists in the send request (both spec versions). The two honest options were a path per agent or a custom header ; a header only works for clients we've specifically taught about the gateway, while a path works for *any* stock A2A client, because clients already POST to whatever URL discovery advertises. The catalog the gateway serves points at `/a2a/{namespace}/{prefix}`; so the routing key lives in discovery, not in anything the client has to be told. The path is **namespace-qualified** (confirmed by the maintainers) so two agents sharing a prefix across different namespaces can never collide. It's also what agentgateway (Linux Foundation) does, and it gives each agent its own HTTPRoute for per-agent policy attachment.
 
 </details>
 
 <details>
-<summary><b>2 : Card url rewriting is load-bearing (and the v1.0 signed-card tension)</b></summary>
+<summary><b>2 : Serve signed cards verbatim, route by path — don't rewrite the card</b></summary>
 
 <br>
 
-If the broker proxied upstream cards through unchanged, a client would read the upstream `url` and talk *directly* to the agent... silently bypassing the gateway: no AuthPolicy, no rate limits, no logs, and nothing errors. So the served card's `url` is rewritten to the gateway path ; that single rewrite is what makes unmodified clients route through the policy perimeter.
+The obvious move was to rewrite the served card's `url` to the gateway path, so an unmodified client reading the card routes back through the gateway rather than talking *directly* to the agent and silently bypassing the policy perimeter (no AuthPolicy, no rate limits, no logs). That works right up until v1.0: cards can carry JWS signatures over the JCS-canonicalized card, and the signature covers the URL — rewriting the card invalidates its signature.
 
-v1.0 complicates it: cards can carry JWS signatures over the canonicalized card, and the signature covers the URL — a rewritten card is an invalidated signature. The direction under discussion upstream: route by path prefix (and v1.0's `tenant` field, which exists precisely for multiple agents behind one endpoint) and serve signed cards **verbatim**, with the catalog advertising the gateway endpoint. The open dependency.., whether clients reliably discover via catalog/tenant rather than the card's own interface URL; is flagged in the design rather than hand-waved.
+So with v1.0 now the confirmed target, the design **serves signed cards verbatim** and moves the routing key out of the card entirely: the RFC 9727 catalog advertises the gateway endpoint (`/a2a/{namespace}/{prefix}`), and v1.0's `tenant` field — which exists precisely for multiple agents behind one endpoint — carries the per-agent selector. The one residual dependency, that clients discover via the catalog rather than the card's own interface URL, is stated in the design with its two clean resolutions rather than hand-waved.
 
 </details>
 
