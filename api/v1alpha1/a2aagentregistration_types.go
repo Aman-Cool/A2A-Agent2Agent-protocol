@@ -64,6 +64,7 @@ type A2AAgentRegistrationSpec struct {
 	// credentialRef references a Secret containing authentication credentials for fetching the agent card.
 	// Used exclusively by the broker for card discovery. Never injected into client
 	// message/send or tasks/* requests.
+	// The referenced Secret must have the label mcp.kuadrant.io/secret=true.
 	// +optional
 	CredentialRef *SecretReference `json:"credentialRef,omitempty"`
 
