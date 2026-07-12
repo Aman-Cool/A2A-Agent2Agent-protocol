@@ -29,7 +29,7 @@ flowchart LR
         G1 --> S2[MCP Server B]
     end
     subgraph horizontal["A2A — the horizontal axis (this work)"]
-        A1[Agent] -->|message/send| G2[Gateway]
+        A1[Agent] -->|SendMessage| G2[Gateway]
         G2 --> A2[Weather Agent]
         G2 --> A3[Search Agent]
         A2 -.long-running task.-> A1
@@ -41,8 +41,8 @@ flowchart LR
 A2A is an open protocol (originally Google, donated to the Linux Foundation, now at **v1.0**) for communication between *opaque* agents — agents that collaborate without sharing internal memory, tools, or logic. The pieces that matter for a gateway:
 
 - **Agent Cards** .., a JSON manifest served at a well-known path describing what an agent can do (skills), how to reach it (`url` / `supportedInterfaces`), and how to authenticate (`securitySchemes`). Discovery is card-driven: a client reads the card and sends work to whatever URL it advertises.
-- **Tasks** .., the unit of work. A `message/send` creates a task that moves through a lifecycle (`submitted → working → completed/failed/canceled`, with `input-required` and `auth-required` detours) and may outlive the request that created it by hours or days. Clients poll with `tasks/get`, cancel with `tasks/cancel`.
-- **Streaming** .., `message/stream` subscribes the client to real-time task updates over SSE, carrying multi-modal artifacts (text, files, structured data) as they're produced ; `tasks/resubscribe` reconnects a dropped stream.
+- **Tasks** .., the unit of work. A `SendMessage` creates a task that moves through a lifecycle (`submitted → working → completed/failed/canceled`, with `input-required` and `auth-required` detours) and may outlive the request that created it by hours or days. Clients poll with `GetTask`, cancel with `CancelTask`.
+- **Streaming** .., `SendStreamingMessage` subscribes the client to real-time task updates over SSE, carrying multi-modal artifacts (text, files, structured data) as they're produced ; `SubscribeToTask` reconnects a dropped stream.
 - **It complements MCP, not competes** : MCP standardizes agent-to-*tool*, A2A standardizes agent-to-*agent*. A gateway that already routes one is halfway to routing both.
 
 <details>
@@ -101,7 +101,7 @@ sequenceDiagram
     participant Router as ext_proc Router
     participant Agent as Upstream Agent
 
-    Client->>Envoy: POST /a2a/weather {method: message/send}
+    Client->>Envoy: POST /a2a/weather {method: SendMessage}
     Envoy->>Router: RequestHeaders (:path = /a2a/weather)
     Note over Router: detect A2A by path prefix<br/>resolve agent, set :authority
     Envoy->>Router: RequestBody
@@ -129,6 +129,9 @@ timeline
     July 2 : This fork opens for business — spike 1, per-method response ModeOverride : Verified same day against real Envoy — BUFFERED + STREAMED honored mid-request, content-length constraint found + recorded
     July 5 : CRD + controller merged (PR 3) — 56/56 envtest specs, live-verified on Kind, full upstream CI green : Cross-namespace registration gated behind ReferenceGrant consent ; revoking a grant withdraws the config, not just the status
     July 7 : Both open design questions resolved by the maintainers — v1.0 is the target, and paths are namespace-qualified (/a2a/{namespace}/{prefix}) to kill cross-namespace collisions : design doc migrated to the v1.0 surface (method names, well-known path, JWS-signed cards served verbatim)
+    July 8 : Design doc corrected to the exact v1.0 wire (well-known path, camelCase fields, streaming envelopes) : A2A test server migrated to the v1.0 ProtoJSON surface — PascalCase methods, TASK_STATE_* enums, flat parts, StreamResponse envelopes — every field verified against the canonical proto
+    Mid July : Fork housekeeping merged — credential-rotation controller tests (#14) and the credential-label doc (#15) : upstream's api/v1 gateway promotion adopted via a sync PR (#20), A2A kept at v1alpha1 (the right lifecycle for a new surface)
+    July 12 : Design doc sharpened for review — explicit signed-card discovery contract (verbatim + fail-closed), RFC 9264 linkset shape, session model decoupled from MCP's stateless cut ; review requested from David : discovery steel thread underway (#19) — pluggable card store + runtime a2aAgents config layer landed, broker + catalog next
 ```
 
 The pivot in the middle is the story worth telling: the original design routed by reading a `skill` out of the `message/send` body, and the spec pass revealed that field **doesn't exist** — `MessageSendParams` is `{message, configuration, metadata}`, skills live only in the card. So routing moved to a path per agent (`/a2a/{namespace}/{prefix}`), which is also what [agentgateway](https://agentgateway.dev) converged on, and which turns out to be Kuadrant-optimal anyway.., policies attach to HTTPRoutes, and a path per agent means an *operator can attach a distinct AuthPolicy and RateLimitPolicy per agent*. The protocol forced a change that made the design better.
@@ -137,12 +140,14 @@ The pivot in the middle is the story worth telling: the original design routed b
 
 | Workstream | Where | State |
 |---|---|---|
-| Design doc (routing, CRD, card serving, auth, task store) | [Kuadrant#1114](https://github.com/Kuadrant/mcp-gateway/pull/1114) | in review, all review points addressed ; both big decisions now settled (v1.0 target + namespace-qualified paths), doc migrated to v1.0 ; two smaller items still open (session model, discovery convention) |
-| A2A test server (e2e target) | [Kuadrant#1200](https://github.com/Kuadrant/mcp-gateway/pull/1200) | draft, CI green ; v1.0 now confirmed, so the v1.0 surface migration is the next step before it goes ready |
+| Design doc (routing, CRD, card serving, auth, task store) | [Kuadrant#1114](https://github.com/Kuadrant/mcp-gateway/pull/1114) | in review — every review point + the v1.0 migration reflected ; signed-card contract, catalog shape and session scope sharpened ; **review requested from David**, CI green ; one deferred item (discovery convention) |
+| A2A test server (e2e target) | [Kuadrant#1200](https://github.com/Kuadrant/mcp-gateway/pull/1200) | **v1.0 migration done** — full ProtoJSON wire, proto-verified against `a2a.proto@v1.0.1` ; draft, held behind #1114 |
 | Original PoC (federated card broker) | [Kuadrant#986](https://github.com/Kuadrant/mcp-gateway/pull/986) | closed... pre-pivot, superseded by the design |
 | Spike 1 — per-method response ModeOverride | [this fork, PR #1](../../pull/1) | **merged** : verified against real Envoy, BUFFERED + STREAMED both honored mid-request ; surfaced the content-length constraint (recorded in the design doc) |
-| CRD + controller (`A2AAgentRegistration`) | [this fork, PR #3](../../pull/3) | **merged** : 56/56 envtest specs, live-verified grant lifecycle on Kind, upstream CI fully green ; consent-gated cross-namespace with revocation withdrawal ; follow-up test/doc hardening in flight (#14, #15) |
-| Broker card cache + catalog, router, task store | this fork, branch per piece | next up : Tasks 7/8 onward, upstreams once proven |
+| CRD + controller (`A2AAgentRegistration`) | [this fork, PR #3](../../pull/3) | **merged** : 56/56 envtest specs, live-verified grant lifecycle on Kind, upstream CI fully green ; consent-gated cross-namespace with revocation withdrawal |
+| Upstream sync + fork hygiene | [this fork, #20 / #14 / #15](../../pulls?q=is%3Apr+is%3Amerged) | **merged** : adopted upstream's api/v1 gateway promotion (A2A stays v1alpha1) ; credential-rotation controller tests + the credential-label doc |
+| Discovery steel thread (card cache + catalog) | [this fork, PR #19](../../pull/19) | **in progress** : pluggable card store + runtime `a2aAgents` config layer landed ; `A2AAgentManager` ticker refresh + `ServeAgentCard`/catalog next |
+| Router routing + task store | this fork, branch per piece | next, once discovery is proven : namespace-qualified routing, gateway-owned task IDs, buffered + streamed rewrites |
 | Stretch + mentor-gated backlog | [issues #5–#10](../../issues) | deferred scope, each with its why.., three self-executable, three needing mentor decisions |
 
 ## The plan
@@ -157,7 +162,8 @@ gantt
     section Phase 2 — build (fork)
     Spike ModeOverride                    :done,   p2a, 2026-07-01, 2026-07-02
     CRD + controller                      :done,   p2b, 2026-07-02, 2026-07-05
-    Broker card serving + catalog         :        p2c, 2026-07-15, 2026-07-28
+    Upstream api/v1 sync                  :done,   p2s, 2026-07-12, 1d
+    Broker card serving + catalog         :active, p2c, 2026-07-12, 2026-07-28
     Router routing + task-ID mapping      :        p2d, 2026-07-22, 2026-08-04
     section Phase 3 — prove
     SSE streaming passthrough             :        p3a, 2026-08-04, 2026-08-14
@@ -169,7 +175,7 @@ gantt
 - [x] Deterministic A2A test server for e2e
 - [x] Spike: mid-request response mode change (the one piece the review flagged as *"haven't seen it done before... good to derisk early"*) — verified, works ; one constraint found and recorded
 - [x] `A2AAgentRegistration` CRD + controller (config fan-out per gateway namespace); merged ahead of plan ; immutable identity fields, ReferenceGrant-gated cross-namespace, revocation withdraws config
-- [ ] Broker: card cache behind a pluggable interface, RFC 9727 catalog endpoint
+- [ ] Broker: card cache behind a pluggable interface, RFC 9727 catalog endpoint — *in progress ([#19](../../pull/19)): pluggable card store + runtime config layer landed, manager + serving next*
 - [ ] Router: namespace-qualified path-per-agent routing, gateway-owned task IDs, buffered + streamed rewrites
 - [ ] E2E: discovery, task execution, streaming, auth, MCP regression
 
@@ -207,11 +213,11 @@ Clients never see upstream task IDs. The router generates a gateway ID at the re
 </details>
 
 <details>
-<summary><b>4 : Per-method response body mode (the current spike)</b></summary>
+<summary><b>4 : Per-method response body mode (derisked in spike 1)</b></summary>
 
 <br>
 
-Non-streaming methods (`message/send`, `tasks/get`) need the *whole* response body in one pass to rewrite the task ID — Envoy's `BUFFERED` mode. Streaming methods (`message/stream`, `tasks/resubscribe`) need chunks as they arrive — `STREAMED`. The method is only known at the request-body phase, so the router must flip the mode **mid-request** at response-headers via ext_proc `ModeOverride`. The gateway already half-proved this (the elicitation path flips to STREAMED) ; choosing the mode per method, and the BUFFERED half, was the new bit, and spike 1 verified it against real Envoy (Istio 1.27): both directions honored, the client received the rewritten gateway task id through a mode selected mid-request. The spike also surfaced the one constraint: a buffered rewrite changes the body length, so `content-length` must be stripped in the same response-headers response; Envoy fails closed on the mismatch otherwise. Recorded in the design doc's `message/send` section ; transcripts in [PR #1](../../pull/1).
+Non-streaming methods (`SendMessage`, `GetTask`) need the *whole* response body in one pass to rewrite the task ID — Envoy's `BUFFERED` mode. Streaming methods (`SendStreamingMessage`, `SubscribeToTask`) need chunks as they arrive — `STREAMED`. The method is only known at the request-body phase, so the router must flip the mode **mid-request** at response-headers via ext_proc `ModeOverride`. The gateway already half-proved this (the elicitation path flips to STREAMED) ; choosing the mode per method, and the BUFFERED half, was the new bit, and spike 1 verified it against real Envoy (Istio 1.27): both directions honored, the client received the rewritten gateway task id through a mode selected mid-request. The spike also surfaced the one constraint: a buffered rewrite changes the body length, so `content-length` must be stripped in the same response-headers response; Envoy fails closed on the mismatch otherwise. Recorded in the design doc's `SendMessage` section ; transcripts in [PR #1](../../pull/1).
 
 </details>
 
