@@ -367,7 +367,14 @@ func (a *app) loadConfig(path string) error {
 	} else {
 		a.logger.Debug("No virtualServers section found in configuration")
 	}
+	var newA2AAgents []*config.A2AAgent
+	if viper.IsSet("a2aAgents") {
+		if err := viper.UnmarshalKey("a2aAgents", &newA2AAgents); err != nil {
+			return fmt.Errorf("decoding a2aAgents config: %w", err)
+		}
+	}
 	a.mcpConfig.SetServers(newServers, newVirtualServers)
+	a.mcpConfig.SetA2AAgents(newA2AAgents)
 	a.mcpConfig.SetGatewayCACertPEM(viper.GetString("gatewayCACertPEM"))
 
 	a.logger.Debug("config successfully loaded", "# servers", len(newServers))
