@@ -25,6 +25,7 @@ import (
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 	gatewayv1beta1 "sigs.k8s.io/gateway-api/apis/v1beta1"
 
+	mcpv1 "github.com/Kuadrant/mcp-gateway/api/v1"
 	mcpv1alpha1 "github.com/Kuadrant/mcp-gateway/api/v1alpha1"
 	// +kubebuilder:scaffold:imports
 )
@@ -54,6 +55,9 @@ var _ = BeforeSuite(func() {
 	ctx, cancel = context.WithCancel(context.TODO())
 
 	var err error
+	err = mcpv1.AddToScheme(scheme.Scheme)
+	Expect(err).NotTo(HaveOccurred())
+	// A2AAgentRegistration remains in v1alpha1; register it alongside the promoted v1 types.
 	err = mcpv1alpha1.AddToScheme(scheme.Scheme)
 	Expect(err).NotTo(HaveOccurred())
 	err = gatewayv1.Install(scheme.Scheme)

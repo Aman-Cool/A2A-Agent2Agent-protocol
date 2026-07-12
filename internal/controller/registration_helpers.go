@@ -9,23 +9,22 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-
-	mcpv1alpha1 "github.com/Kuadrant/mcp-gateway/api/v1alpha1"
 )
 
 // readLabeledCredential fetches a credential secret via the uncached reader and returns
 // the referenced key's value. The secret must carry the managed-secret label: the label
 // is what authorizes the controller to read it, so its absence is an error, not a skip.
-// Shared by the MCPServerRegistration and A2AAgentRegistration reconcilers.
-func readLabeledCredential(ctx context.Context, reader client.Reader, namespace string, ref *mcpv1alpha1.SecretReference) (string, error) {
+// Shared by the MCPServerRegistration and A2AAgentRegistration reconcilers; takes the
+// secret name and key directly so it is agnostic to the API version of the SecretReference.
+func readLabeledCredential(ctx context.Context, reader client.Reader, namespace, name, key string) (string, error) {
 	secret := &corev1.Secret{}
 	err := reader.Get(ctx, types.NamespacedName{
-		Name:      ref.Name,
+		Name:      name,
 		Namespace: namespace,
 	}, secret)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
-			return "", fmt.Errorf("credential secret %s not found", ref.Name)
+			return "", fmt.Errorf("credential secret %s not found", name)
 		}
 		return "", fmt.Errorf("failed to get credential secret: %w", err)
 	}
@@ -33,12 +32,12 @@ func readLabeledCredential(ctx context.Context, reader client.Reader, namespace 
 	// check for required label
 	if secret.Labels == nil || secret.Labels[ManagedSecretLabel] != ManagedSecretValue {
 		return "", fmt.Errorf("credential secret %s is missing required label %s=%s",
-			ref.Name, ManagedSecretLabel, ManagedSecretValue)
+			name, ManagedSecretLabel, ManagedSecretValue)
 	}
 
-	val, ok := secret.Data[ref.Key]
+	val, ok := secret.Data[key]
 	if !ok {
-		return "", fmt.Errorf("credential secret %s missing key %s", ref.Name, ref.Key)
+		return "", fmt.Errorf("credential secret %s missing key %s", name, key)
 	}
 	return string(val), nil
 }

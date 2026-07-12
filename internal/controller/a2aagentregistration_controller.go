@@ -299,7 +299,7 @@ func (r *A2AReconciler) buildA2AAgentConfig(ctx context.Context, targetRoute *ga
 	// add credential if configured: used by the broker for card discovery only,
 	// never injected into client message/send or tasks/* requests
 	if a2areg.Spec.CredentialRef != nil {
-		credential, err := readLabeledCredential(ctx, r.DirectAPIReader, a2areg.Namespace, a2areg.Spec.CredentialRef)
+		credential, err := readLabeledCredential(ctx, r.DirectAPIReader, a2areg.Namespace, a2areg.Spec.CredentialRef.Name, a2areg.Spec.CredentialRef.Key)
 		if err != nil {
 			return nil, err
 		}
