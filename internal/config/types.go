@@ -18,6 +18,7 @@ type MCPServersConfig struct {
 
 	Servers        []*MCPServer
 	VirtualServers []*VirtualServer
+	A2AAgents      []*A2AAgent
 	observers      []Observer
 	//MCPGatewayExternalHostname is the accessible host of the gateway listener
 	MCPGatewayExternalHostname string
@@ -56,6 +57,22 @@ func (config *MCPServersConfig) ListVirtualServers() []*VirtualServer {
 	defer config.lock.RUnlock()
 	out := make([]*VirtualServer, len(config.VirtualServers))
 	copy(out, config.VirtualServers)
+	return out
+}
+
+// SetA2AAgents atomically replaces the A2A agent list.
+func (config *MCPServersConfig) SetA2AAgents(agents []*A2AAgent) {
+	config.lock.Lock()
+	defer config.lock.Unlock()
+	config.A2AAgents = agents
+}
+
+// ListA2AAgents returns a consistent snapshot of the current A2A agent list.
+func (config *MCPServersConfig) ListA2AAgents() []*A2AAgent {
+	config.lock.RLock()
+	defer config.lock.RUnlock()
+	out := make([]*A2AAgent, len(config.A2AAgents))
+	copy(out, config.A2AAgents)
 	return out
 }
 

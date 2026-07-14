@@ -123,3 +123,39 @@ func TestUpsertAndRemoveA2AAgent(t *testing.T) {
 		t.Fatalf("a2aAgents did not round-trip: %s", raw)
 	}
 }
+
+// TestMCPServersConfig_A2AAgentsAccessors covers the runtime accessors the broker
+// consumes: Set replaces the list, and List returns an isolated snapshot so a
+// caller mutating the result cannot corrupt the shared config.
+func TestMCPServersConfig_A2AAgentsAccessors(t *testing.T) {
+	cfg := &MCPServersConfig{}
+	if got := cfg.ListA2AAgents(); len(got) != 0 {
+		t.Fatalf("expected empty list, got %d", len(got))
+	}
+
+	cfg.SetA2AAgents([]*A2AAgent{
+		{Name: "mcp-test/weather", AgentPrefix: "weather"},
+		{Name: "mcp-test/search", AgentPrefix: "search"},
+	})
+
+	got := cfg.ListA2AAgents()
+	if len(got) != 2 || got[0].Name != "mcp-test/weather" || got[1].AgentPrefix != "search" {
+		t.Fatalf("unexpected agents: %+v", got)
+	}
+
+	// snapshot isolation: appending to the returned slice must not grow the
+	// config's internal list (the returned slice header is a copy).
+	got = append(got, &A2AAgent{Name: "extra"})
+	if len(got) != 3 {
+		t.Fatalf("append failed: %d", len(got))
+	}
+	if again := cfg.ListA2AAgents(); len(again) != 2 {
+		t.Fatalf("ListA2AAgents did not return an isolated snapshot: got %d", len(again))
+	}
+
+	// Set replaces (not appends)
+	cfg.SetA2AAgents([]*A2AAgent{{Name: "mcp-test/only"}})
+	if got := cfg.ListA2AAgents(); len(got) != 1 || got[0].Name != "mcp-test/only" {
+		t.Fatalf("Set did not replace: %+v", got)
+	}
+}
