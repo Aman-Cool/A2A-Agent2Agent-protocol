@@ -14,6 +14,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -309,6 +310,40 @@ var _ = Describe("A2AAgentRegistration Controller", func() {
 			reconcileA2AUntil(ctx, reconciler, a2aNamespacedName, func(g Gomega) {
 				g.Expect(configWriter.removedAgents).To(ContainElement(agentName))
 			})
+		})
+
+		It("should derive an https://host:443 endpoint with no path for an Istio Hostname backend", func() {
+			const routeName = "a2a-external-route"
+			const externalHost = "external-agent.example.com"
+
+			route := createTestA2AHostnameRoute(routeName, "default", "a2a-test.mcp.local", externalHost, 443, gatewayName, "default")
+			Expect(testK8sClient.Create(ctx, route)).To(Succeed())
+			Eventually(func(g Gomega) {
+				fetched := &gatewayv1.HTTPRoute{}
+				g.Expect(testK8sClient.Get(ctx, types.NamespacedName{Name: routeName, Namespace: "default"}, fetched)).To(Succeed())
+				g.Expect(setHTTPRouteAcceptedStatus(ctx, fetched, gatewayName, "default")).To(Succeed())
+			}, testTimeout, testRetryInterval).Should(Succeed())
+			DeferCleanup(func() { deleteTestHTTPRoute(ctx, routeName, "default") })
+
+			a2areg := createTestA2AAgentRegistration(resourceName, "default", routeName, "external")
+			Expect(testK8sClient.Create(ctx, a2areg)).To(Succeed())
+
+			configWriter := newMockA2AConfigReaderWriter()
+			reconciler := newA2AReconciler(configWriter)
+			waitForA2ARegistrationCacheSync(ctx, a2aNamespacedName)
+
+			key := fmt.Sprintf("default/%s", a2aAgentName(&mcpv1alpha1.A2AAgentRegistration{
+				ObjectMeta: metav1.ObjectMeta{Name: resourceName, Namespace: "default"},
+			}))
+			reconcileA2AUntil(ctx, reconciler, a2aNamespacedName, func(g Gomega) {
+				g.Expect(configWriter.upsertedAgents).To(HaveKey(key))
+			})
+
+			// A2A calls buildServerInfoFromHTTPRoute with an empty path, so a Hostname backend
+			// yields https://<host>:443 with no trailing path (the agent-specific case)
+			agent := configWriter.upsertedAgents[key]
+			Expect(agent.URL).To(Equal(fmt.Sprintf("https://%s:443", externalHost)))
+			Expect(agent.Hostname).To(Equal("a2a-test.mcp.local"))
 		})
 
 		It("should call RemoveA2AAgent and drop the finalizer on deletion", func() {
@@ -772,6 +807,41 @@ func createTestA2AReferenceGrant(name, namespace, fromNamespace string) *gateway
 				{
 					Group: gatewayv1beta1.Group(gatewayv1.GroupVersion.Group),
 					Kind:  "HTTPRoute",
+				},
+			},
+		},
+	}
+}
+
+// createTestA2AHostnameRoute creates an HTTPRoute whose backend is an Istio Hostname (an
+// external service), attaching to the gateway via hostname — mirroring the external-agent setup.
+func createTestA2AHostnameRoute(name, namespace, hostname, externalHost string, port int32, gatewayName, gatewayNamespace string) *gatewayv1.HTTPRoute {
+	return &gatewayv1.HTTPRoute{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+		Spec: gatewayv1.HTTPRouteSpec{
+			CommonRouteSpec: gatewayv1.CommonRouteSpec{
+				ParentRefs: []gatewayv1.ParentReference{
+					{
+						Name:      gatewayv1.ObjectName(gatewayName),
+						Namespace: ptr.To(gatewayv1.Namespace(gatewayNamespace)),
+					},
+				},
+			},
+			Hostnames: []gatewayv1.Hostname{gatewayv1.Hostname(hostname)},
+			Rules: []gatewayv1.HTTPRouteRule{
+				{
+					BackendRefs: []gatewayv1.HTTPBackendRef{
+						{
+							BackendRef: gatewayv1.BackendRef{
+								BackendObjectReference: gatewayv1.BackendObjectReference{
+									Group: ptr.To(gatewayv1.Group("networking.istio.io")),
+									Kind:  ptr.To(gatewayv1.Kind("Hostname")),
+									Name:  gatewayv1.ObjectName(externalHost),
+									Port:  ptr.To(gatewayv1.PortNumber(port)),
+								},
+							},
+						},
+					},
 				},
 			},
 		},
