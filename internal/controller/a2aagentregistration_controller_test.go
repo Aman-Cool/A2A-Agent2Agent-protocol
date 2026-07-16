@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -230,5 +231,84 @@ func TestFindA2AAgentRegistrationsForSecret(t *testing.T) {
 	}
 	if requests[0].Name != "with-cred" || requests[0].Namespace != "agents" {
 		t.Errorf("expected agents/with-cred, got %s/%s", requests[0].Namespace, requests[0].Name)
+	}
+}
+
+func TestRegistrationOlder(t *testing.T) {
+	t0 := metav1.NewTime(time.Now().Truncate(time.Second))
+	t1 := metav1.NewTime(t0.Add(time.Hour))
+
+	// earlier creationTimestamp wins even with the lexicographically-larger name
+	older := &mcpv1alpha1.A2AAgentRegistration{ObjectMeta: metav1.ObjectMeta{Name: "b", CreationTimestamp: t0}}
+	newer := &mcpv1alpha1.A2AAgentRegistration{ObjectMeta: metav1.ObjectMeta{Name: "a", CreationTimestamp: t1}}
+	if !registrationOlder(older, newer) {
+		t.Fatal("earlier creationTimestamp must win regardless of name")
+	}
+	if registrationOlder(newer, older) {
+		t.Fatal("later creationTimestamp must lose")
+	}
+
+	// equal timestamps fall back to the name tie-break
+	a := &mcpv1alpha1.A2AAgentRegistration{ObjectMeta: metav1.ObjectMeta{Name: "a", CreationTimestamp: t0}}
+	b := &mcpv1alpha1.A2AAgentRegistration{ObjectMeta: metav1.ObjectMeta{Name: "b", CreationTimestamp: t0}}
+	if !registrationOlder(a, b) || registrationOlder(b, a) {
+		t.Fatal("equal timestamps must tie-break deterministically by name")
+	}
+}
+
+func TestOlderPrefixOwner(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = mcpv1alpha1.AddToScheme(scheme)
+	t0 := metav1.NewTime(time.Now().Truncate(time.Second))
+	t1 := metav1.NewTime(t0.Add(time.Minute))
+
+	reg := func(name, ns, prefix string, ts metav1.Time) *mcpv1alpha1.A2AAgentRegistration {
+		return &mcpv1alpha1.A2AAgentRegistration{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns, CreationTimestamp: ts},
+			Spec:       mcpv1alpha1.A2AAgentRegistrationSpec{AgentPrefix: prefix},
+		}
+	}
+	older := reg("older", "agents", "weather", t0)
+	newer := reg("newer", "agents", "weather", t1)
+	otherPrefix := reg("other", "agents", "search", t0)
+	otherNs := reg("elsewhere", "other-ns", "weather", t0)
+
+	cl := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(older, newer, otherPrefix, otherNs).Build()
+	r := &A2AReconciler{Client: cl}
+
+	if owner, err := r.olderPrefixOwner(context.Background(), older); err != nil || owner != "" {
+		t.Fatalf("older must own its prefix, got owner=%q err=%v", owner, err)
+	}
+	if owner, err := r.olderPrefixOwner(context.Background(), newer); err != nil || owner != "older" {
+		t.Fatalf("newer must be blocked by older, got owner=%q err=%v", owner, err)
+	}
+	if owner, err := r.olderPrefixOwner(context.Background(), otherNs); err != nil || owner != "" {
+		t.Fatalf("same prefix in a different namespace must not collide, got owner=%q", owner)
+	}
+}
+
+func TestFindContendingA2ARegistrations(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = mcpv1alpha1.AddToScheme(scheme)
+
+	reg := func(name, ns, prefix string) *mcpv1alpha1.A2AAgentRegistration {
+		return &mcpv1alpha1.A2AAgentRegistration{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+			Spec:       mcpv1alpha1.A2AAgentRegistrationSpec{AgentPrefix: prefix},
+		}
+	}
+	self := reg("a", "ns", "weather")
+	sibling := reg("b", "ns", "weather")
+	differentPrefix := reg("c", "ns", "search")
+	differentNs := reg("d", "other", "weather")
+
+	cl := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(self, sibling, differentPrefix, differentNs).Build()
+	r := &A2AReconciler{Client: cl}
+
+	reqs := r.findContendingA2ARegistrations(context.Background(), self)
+	if len(reqs) != 1 || reqs[0].Name != "b" || reqs[0].Namespace != "ns" {
+		t.Fatalf("expected only the same-namespace same-prefix sibling, got %v", reqs)
 	}
 }

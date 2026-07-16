@@ -228,6 +228,42 @@ var _ = Describe("A2AAgentRegistration Controller", func() {
 			}, testTimeout, testRetryInterval).Should(Succeed())
 		})
 
+		It("should reject a duplicate agentPrefix in the same namespace with reason PrefixCollision", func() {
+			// the winner is created first and named lexicographically smaller, so it owns the
+			// prefix under both the creationTimestamp rule and the name tie-break
+			const winnerName, loserName = "a-collide-reg", "z-collide-reg"
+			winnerNN := types.NamespacedName{Name: winnerName, Namespace: "default"}
+			loserNN := types.NamespacedName{Name: loserName, Namespace: "default"}
+
+			Expect(testK8sClient.Create(ctx, createTestA2AAgentRegistration(winnerName, "default", httpRouteName, "weather"))).To(Succeed())
+			Expect(testK8sClient.Create(ctx, createTestA2AAgentRegistration(loserName, "default", httpRouteName, "weather"))).To(Succeed())
+			DeferCleanup(func() {
+				forceDeleteTestA2AAgentRegistration(ctx, winnerName, "default")
+				forceDeleteTestA2AAgentRegistration(ctx, loserName, "default")
+			})
+
+			configWriter := newMockA2AConfigReaderWriter()
+			reconciler := newA2AReconciler(configWriter)
+			waitForA2ARegistrationCacheSync(ctx, winnerNN)
+			waitForA2ARegistrationCacheSync(ctx, loserNN)
+
+			// winner: config written, Ready=True
+			reconcileA2AUntil(ctx, reconciler, winnerNN, func(g Gomega) {
+				g.Expect(configWriter.upsertedAgents).To(HaveKey(fmt.Sprintf("default/default/%s", winnerName)))
+			})
+
+			// loser: Ready=False with reason PrefixCollision, and no config written for it
+			reconcileA2AUntil(ctx, reconciler, loserNN, func(g Gomega) {
+				updated := &mcpv1alpha1.A2AAgentRegistration{}
+				g.Expect(testK8sClient.Get(ctx, loserNN, updated)).To(Succeed())
+				ready := meta.FindStatusCondition(updated.Status.Conditions, "Ready")
+				g.Expect(ready).NotTo(BeNil())
+				g.Expect(ready.Status).To(Equal(metav1.ConditionFalse))
+				g.Expect(ready.Reason).To(Equal(conditionReasonPrefixCollision))
+			})
+			Expect(configWriter.upsertedAgents).NotTo(HaveKey(fmt.Sprintf("default/default/%s", loserName)))
+		})
+
 		It("should call RemoveA2AAgent and drop the finalizer on deletion", func() {
 			a2areg := createTestA2AAgentRegistration(resourceName, "default", httpRouteName, "weather")
 			Expect(testK8sClient.Create(ctx, a2areg)).To(Succeed())

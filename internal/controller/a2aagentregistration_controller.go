@@ -33,6 +33,10 @@ const (
 	// A2ATargetNamespaceIndex indexes A2AAgentRegistrations by the namespace their targetRef
 	// resolves into, so ReferenceGrant changes in that namespace trigger re-reconciles.
 	A2ATargetNamespaceIndex = "spec.targetRef.a2anamespace"
+
+	// conditionReasonPrefixCollision marks a registration whose agentPrefix is already owned
+	// by an older registration in the same namespace.
+	conditionReasonPrefixCollision = "PrefixCollision"
 )
 
 // A2AAgentConfigReaderWriter adds and removes A2AAgents to the config
@@ -111,6 +115,30 @@ func (r *A2AReconciler) Reconcile(ctx context.Context, req reconcile.Request) (r
 			msg := fmt.Sprintf("cross-namespace targetRef requires a ReferenceGrant in namespace %s permitting A2AAgentRegistration to reference HTTPRoute", routeNamespace)
 			return r.failStatus(ctx, a2areg, msg, nil)
 		}
+	}
+
+	// agentPrefix must be unique within the namespace: the routing key is {namespace}/{agentPrefix},
+	// so two registrations claiming the same prefix would collide in the broker index (last write
+	// wins). Ownership is deterministic — the oldest registration by creationTimestamp, tie-broken
+	// by name, keeps the prefix regardless of reconcile order (cold-start safe). A later contender
+	// withdraws any config it raced into writing and reports the collision.
+	owner, err := r.olderPrefixOwner(ctx, a2areg)
+	if err != nil {
+		return r.failStatus(ctx, a2areg, err.Error(), err)
+	}
+	if owner != "" {
+		if err := r.ConfigReaderWriter.RemoveA2AAgent(ctx, a2aAgentName(a2areg)); err != nil {
+			return r.failStatus(ctx, a2areg, err.Error(), err)
+		}
+		msg := fmt.Sprintf("agentPrefix %q is already claimed by registration %q in namespace %s",
+			a2areg.Spec.AgentPrefix, owner, a2areg.Namespace)
+		if err := r.updateStatus(ctx, a2areg, false, conditionReasonPrefixCollision, msg); err != nil {
+			if apierrors.IsConflict(err) {
+				return ctrl.Result{RequeueAfter: defaultRequeueTime}, nil
+			}
+			return ctrl.Result{}, fmt.Errorf("reconcile failed: status update failed %w", err)
+		}
+		return reconcile.Result{}, nil
 	}
 
 	// get the HTTPRoute this registration targets, honoring targetRef.namespace
@@ -206,6 +234,64 @@ func (r *A2AReconciler) failStatus(ctx context.Context, a2areg *mcpv1alpha1.A2AA
 // cluster-wide removal both key on it.
 func a2aAgentName(a2areg *mcpv1alpha1.A2AAgentRegistration) string {
 	return fmt.Sprintf("%s/%s", a2areg.Namespace, a2areg.Name)
+}
+
+// olderPrefixOwner returns the name of an older A2AAgentRegistration in the same namespace
+// that claims the same agentPrefix, or "" if a2areg owns the prefix. Ownership is the oldest
+// by creationTimestamp, tie-broken by name, so every reconcile picks the same winner
+// regardless of order (cold-start safe).
+func (r *A2AReconciler) olderPrefixOwner(ctx context.Context, a2areg *mcpv1alpha1.A2AAgentRegistration) (string, error) {
+	list := &mcpv1alpha1.A2AAgentRegistrationList{}
+	if err := r.List(ctx, list, client.InNamespace(a2areg.Namespace)); err != nil {
+		return "", err
+	}
+	for i := range list.Items {
+		other := &list.Items[i]
+		if other.Name == a2areg.Name || other.Spec.AgentPrefix != a2areg.Spec.AgentPrefix {
+			continue
+		}
+		if !other.DeletionTimestamp.IsZero() {
+			continue // a contender being deleted no longer holds the prefix
+		}
+		if registrationOlder(other, a2areg) {
+			return other.Name, nil
+		}
+	}
+	return "", nil
+}
+
+// registrationOlder reports whether a wins a prefix contest against b: earlier
+// creationTimestamp, tie-broken by name for a deterministic, order-independent winner.
+func registrationOlder(a, b *mcpv1alpha1.A2AAgentRegistration) bool {
+	if !a.CreationTimestamp.Equal(&b.CreationTimestamp) {
+		return a.CreationTimestamp.Before(&b.CreationTimestamp)
+	}
+	return a.Name < b.Name
+}
+
+// findContendingA2ARegistrations enqueues the other registrations in the same namespace that
+// claim the same agentPrefix as the changed object, so prefix ownership is re-evaluated when a
+// contender is added, changed, or removed.
+func (r *A2AReconciler) findContendingA2ARegistrations(ctx context.Context, obj client.Object) []reconcile.Request {
+	changed, ok := obj.(*mcpv1alpha1.A2AAgentRegistration)
+	if !ok {
+		return nil
+	}
+	list := &mcpv1alpha1.A2AAgentRegistrationList{}
+	if err := r.List(ctx, list, client.InNamespace(changed.Namespace)); err != nil {
+		return nil
+	}
+	var reqs []reconcile.Request
+	for i := range list.Items {
+		other := &list.Items[i]
+		if other.Name == changed.Name || other.Spec.AgentPrefix != changed.Spec.AgentPrefix {
+			continue
+		}
+		reqs = append(reqs, reconcile.Request{
+			NamespacedName: types.NamespacedName{Namespace: other.Namespace, Name: other.Name},
+		})
+	}
+	return reqs
 }
 
 // targetRefNamespace resolves the namespace a targetRef points into, defaulting
@@ -335,6 +421,13 @@ func (r *A2AReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manager) 
 
 	controller := ctrl.NewControllerManagedBy(mgr).
 		For(&mcpv1alpha1.A2AAgentRegistration{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
+		Watches(
+			// re-decide prefix ownership when a same-namespace, same-prefix contender is added,
+			// changed, or removed (so a deleted owner hands off to the next-oldest registration)
+			&mcpv1alpha1.A2AAgentRegistration{},
+			handler.EnqueueRequestsFromMapFunc(r.findContendingA2ARegistrations),
+			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
+		).
 		Watches(
 			&gatewayv1.HTTPRoute{},
 			handler.EnqueueRequestsFromMapFunc(r.findA2AAgentRegistrationsForHTTPRoute),
