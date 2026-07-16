@@ -7,6 +7,7 @@ import (
 	"time"
 
 	mcpv1 "github.com/Kuadrant/mcp-gateway/api/v1"
+	"github.com/Kuadrant/mcp-gateway/internal/a2a"
 	"github.com/Kuadrant/mcp-gateway/internal/broker"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
@@ -41,6 +42,7 @@ func (a *app) createBroker() {
 		)
 	}
 	a.mcpBroker = broker.NewBroker(a.logger.With("component", "broker"), brokerOpts...)
+	a.a2aBroker = a2a.NewBroker(a.logger.With("component", "a2a-broker"), a2a.NewMemoryStore(), managerTickerInterval)
 	a.tokenHandler = broker.NewTokenHandler(a.sessionCache, a.tokenElicitMap, *a.logger)
 	a.elicitHandler = &broker.ElicitationHandler{
 		ElicitationMap: a.tokenElicitMap,
@@ -72,6 +74,11 @@ func (a *app) setUpHTTPServer() {
 	oauthHandler := broker.ProtectedResourceHandler{Logger: a.logger}
 	mux.HandleFunc("/.well-known/oauth-protected-resource", oauthHandler.Handle)
 	mux.HandleFunc("/.well-known/oauth-protected-resource/", oauthHandler.Handle)
+
+	// a2a discovery: the api catalog plus per-agent card serving; ServeAgentCard parses
+	// /a2a/{namespace}/{prefix}/.well-known/agent-card.json itself and 404s any other /a2a path
+	mux.HandleFunc("/.well-known/api-catalog", a.a2aBroker.ServeAPICatalog)
+	mux.HandleFunc("/a2a/", a.a2aBroker.ServeAgentCard)
 
 	// WriteTimeout of 0 (disabled) is important for SSE connections (GET /mcp).
 	// SSE streams notifications indefinitely - any write timeout would kill the connection.

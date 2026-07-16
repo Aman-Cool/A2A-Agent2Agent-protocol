@@ -1920,51 +1920,55 @@ func TestBuildGatewayHTTPRoute_StripsRouterHeaders(t *testing.T) {
 	}
 
 	route := reconciler.buildGatewayHTTPRoute(mcpExt, "mcp.example.com")
-	if len(route.Spec.Rules) != 3 {
-		t.Fatalf("expected 3 rules, got %d", len(route.Spec.Rules))
+	if len(route.Spec.Rules) != 5 {
+		t.Fatalf("expected 5 rules, got %d", len(route.Spec.Rules))
 	}
 
-	if route.Spec.Rules[0].Name == nil || string(*route.Spec.Rules[0].Name) != "mcp" {
-		t.Errorf("expected first rule name = %q, got %v", "mcp", route.Spec.Rules[0].Name)
-	}
-	if route.Spec.Rules[1].Name == nil || string(*route.Spec.Rules[1].Name) != "well-known" {
-		t.Errorf("expected second rule name = %q, got %v", "well-known", route.Spec.Rules[1].Name)
-	}
-	if route.Spec.Rules[2].Name == nil || string(*route.Spec.Rules[2].Name) != "status" {
-		t.Errorf("expected third rule name = %q, got %v", "status", route.Spec.Rules[2].Name)
+	wantNames := []string{"mcp", "well-known", "status", "a2a", "api-catalog"}
+	for i, want := range wantNames {
+		if route.Spec.Rules[i].Name == nil || string(*route.Spec.Rules[i].Name) != want {
+			t.Errorf("expected rule %d name = %q, got %v", i, want, route.Spec.Rules[i].Name)
+		}
 	}
 	if len(route.Spec.Rules[2].Filters) != 0 {
 		t.Errorf("status rule should have no filters, got %d", len(route.Spec.Rules[2].Filters))
 	}
 
+	// the a2a rule strips the router-owned identity headers so clients cannot inject them
+	a2aRule := route.Spec.Rules[3]
+	if len(a2aRule.Filters) != 1 || a2aRule.Filters[0].RequestHeaderModifier == nil {
+		t.Fatalf("a2a rule must carry the header-strip filter, got %+v", a2aRule.Filters)
+	}
+	stripped := a2aRule.Filters[0].RequestHeaderModifier.Remove
+	if len(stripped) != 2 || stripped[0] != "x-a2a-agent" || stripped[1] != "x-a2a-task-id" {
+		t.Errorf("a2a rule must strip x-a2a-agent and x-a2a-task-id, got %v", stripped)
+	}
+
+	// the mcp rule strips the router-owned MCP headers (the a2a rule strips its own set,
+	// asserted above)
 	var found bool
-	for _, rule := range route.Spec.Rules {
-		for _, f := range rule.Filters {
-			if f.Type != gatewayv1.HTTPRouteFilterRequestHeaderModifier {
-				continue
-			}
-			if f.RequestHeaderModifier == nil {
-				continue
-			}
-
-			removed := map[string]bool{}
-			for _, h := range f.RequestHeaderModifier.Remove {
-				removed[h] = true
-			}
-
-			if !removed["mcp-init-host"] {
-				t.Errorf("expected RequestHeaderModifier.Remove to contain mcp-init-host, got %v", f.RequestHeaderModifier.Remove)
-			}
-
-			if !removed["router-key"] {
-				t.Errorf("expected RequestHeaderModifier.Remove to contain router-key, got %v", f.RequestHeaderModifier.Remove)
-			}
-
-			found = true
+	for _, f := range route.Spec.Rules[0].Filters {
+		if f.Type != gatewayv1.HTTPRouteFilterRequestHeaderModifier || f.RequestHeaderModifier == nil {
+			continue
 		}
+
+		removed := map[string]bool{}
+		for _, h := range f.RequestHeaderModifier.Remove {
+			removed[h] = true
+		}
+
+		if !removed["mcp-init-host"] {
+			t.Errorf("expected RequestHeaderModifier.Remove to contain mcp-init-host, got %v", f.RequestHeaderModifier.Remove)
+		}
+
+		if !removed["router-key"] {
+			t.Errorf("expected RequestHeaderModifier.Remove to contain router-key, got %v", f.RequestHeaderModifier.Remove)
+		}
+
+		found = true
 	}
 	if !found {
-		t.Errorf("expected RequestHeaderModifier filter to be present in HTTPRoute rules")
+		t.Errorf("expected RequestHeaderModifier filter on the mcp rule")
 	}
 }
 

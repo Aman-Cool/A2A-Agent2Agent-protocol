@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Kuadrant/mcp-gateway/internal/a2a"
 	"github.com/Kuadrant/mcp-gateway/internal/broker"
 	"github.com/Kuadrant/mcp-gateway/internal/clients"
 	config "github.com/Kuadrant/mcp-gateway/internal/config"
@@ -82,6 +83,7 @@ type app struct {
 	tokenElicitMap elicitation.Map
 	hairpinPool    *clients.HairpinClientPool
 	mcpBroker      broker.MCPBroker
+	a2aBroker      *a2a.Broker
 	tokenHandler   http.Handler
 	elicitHandler  http.Handler
 	brokerServer   *http.Server
@@ -256,6 +258,7 @@ func (a *app) buildHairpinClient() {
 func (a *app) registerObservers() {
 	a.mcpConfig.RegisterObserver(a.router)
 	a.mcpConfig.RegisterObserver(a.mcpBroker)
+	a.mcpConfig.RegisterObserver(a.a2aBroker)
 }
 
 func (a *app) loadAndWatchConfig(ctx context.Context) {
@@ -320,6 +323,11 @@ func (a *app) run(ctx context.Context) {
 			stop <- os.Interrupt
 		}
 	}()
+
+	// a2a agent-card refresh loop; canceled when run returns on shutdown
+	a2aCtx, a2aCancel := context.WithCancel(ctx)
+	defer a2aCancel()
+	go a.a2aBroker.Start(a2aCtx)
 
 	<-stop
 

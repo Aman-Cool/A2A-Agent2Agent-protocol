@@ -664,6 +664,8 @@ func (r *MCPGatewayExtensionReconciler) buildGatewayHTTPRoute(mcpExt *mcpv1.MCPG
 	mcpPath := "/mcp"
 	wellKnownPath := "/.well-known/oauth-protected-resource"
 	statusPath := "/status"
+	a2aPath := "/a2a"
+	apiCatalogPath := "/.well-known/api-catalog"
 	port := gatewayv1.PortNumber(brokerHTTPPort)
 	gatewayNamespace := gatewayv1.Namespace(mcpExt.Spec.TargetRef.Namespace)
 	sectionName := gatewayv1.SectionName(mcpExt.Spec.TargetRef.SectionName)
@@ -727,6 +729,40 @@ func (r *MCPGatewayExtensionReconciler) buildGatewayHTTPRoute(mcpExt *mcpv1.MCPG
 					Path: &gatewayv1.HTTPPathMatch{
 						Type:  &pathType,
 						Value: &statusPath,
+					},
+				},
+			},
+			BackendRefs: backendRefs,
+		},
+		{
+			// a2a discovery and (future) invocation traffic; the router-owned identity
+			// headers are stripped so clients cannot inject them
+			Name: ptr.To(gatewayv1.SectionName("a2a")),
+			Matches: []gatewayv1.HTTPRouteMatch{
+				{
+					Path: &gatewayv1.HTTPPathMatch{
+						Type:  &pathType,
+						Value: &a2aPath,
+					},
+				},
+			},
+			Filters: []gatewayv1.HTTPRouteFilter{
+				{
+					Type: gatewayv1.HTTPRouteFilterRequestHeaderModifier,
+					RequestHeaderModifier: &gatewayv1.HTTPHeaderFilter{
+						Remove: []string{"x-a2a-agent", "x-a2a-task-id"},
+					},
+				},
+			},
+			BackendRefs: backendRefs,
+		},
+		{
+			Name: ptr.To(gatewayv1.SectionName("api-catalog")),
+			Matches: []gatewayv1.HTTPRouteMatch{
+				{
+					Path: &gatewayv1.HTTPPathMatch{
+						Type:  &pathType,
+						Value: &apiCatalogPath,
 					},
 				},
 			},
