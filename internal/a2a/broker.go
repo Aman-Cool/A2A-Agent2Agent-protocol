@@ -3,17 +3,29 @@ package a2a
 import (
 	"context"
 	"log/slog"
+	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/Kuadrant/mcp-gateway/internal/config"
 )
 
-// Broker is the discovery half of A2A support: it observes the a2aAgents config and
-// indexes agents by their namespace-qualified routing path. Later commits add the card
-// cache, per-agent card serving, and the RFC 9727 catalog.
+const (
+	// DefaultRefreshInterval is the card-refresh ticker interval when none is given.
+	DefaultRefreshInterval = time.Minute
+	// cardFetchTimeout bounds a single upstream card fetch.
+	cardFetchTimeout = 10 * time.Second
+)
+
+// Broker is the discovery half of A2A support: it observes the a2aAgents config, indexes
+// agents by their namespace-qualified routing path, and caches each agent's AgentCard for
+// verbatim serving. Per-agent card serving and the RFC 9727 catalog build on this.
 type Broker struct {
-	logger *slog.Logger
+	logger   *slog.Logger
+	store    CardStore
+	client   *http.Client
+	interval time.Duration
 
 	mu     sync.RWMutex
 	agents map[string]*config.A2AAgent // keyed by "{namespace}/{agentPrefix}"
@@ -21,11 +33,18 @@ type Broker struct {
 
 var _ config.Observer = (*Broker)(nil)
 
-// NewBroker returns an empty Broker.
-func NewBroker(logger *slog.Logger) *Broker {
+// NewBroker returns a Broker backed by the given card store. interval is the card-refresh
+// ticker period; a value <= 0 uses DefaultRefreshInterval.
+func NewBroker(logger *slog.Logger, store CardStore, interval time.Duration) *Broker {
+	if interval <= 0 {
+		interval = DefaultRefreshInterval
+	}
 	return &Broker{
-		logger: logger,
-		agents: map[string]*config.A2AAgent{},
+		logger:   logger,
+		store:    store,
+		client:   &http.Client{Timeout: cardFetchTimeout},
+		interval: interval,
+		agents:   map[string]*config.A2AAgent{},
 	}
 }
 
@@ -47,7 +66,19 @@ func (b *Broker) SetAgents(agents []*config.A2AAgent) {
 	b.mu.Lock()
 	b.agents = next
 	b.mu.Unlock()
+	b.evictStaleCards(next)
 	b.logger.Debug("a2a broker agents updated", "count", len(next))
+}
+
+// evictStaleCards drops cached cards for agents that are no longer registered (removed or
+// disabled), so the card store tracks the live agent set.
+func (b *Broker) evictStaleCards(current map[string]*config.A2AAgent) {
+	for key := range b.store.List() {
+		if _, ok := current[key]; !ok {
+			namespace, prefix, _ := strings.Cut(key, "/")
+			b.store.Delete(namespace, prefix)
+		}
+	}
 }
 
 // GetAgentByPath resolves a namespace-qualified path (namespace, agentPrefix) to its agent.
