@@ -651,7 +651,6 @@ type MCPGatewayExtensionSetup struct {
 	httpRoute        *gatewayapiv1.HTTPRoute
 	urlElicitation   bool
 	caCertBundleRef  *mcpv1.CACertBundleReference
-	protocolMode     mcpv1.ProtocolMode
 	disableHTTPRoute bool
 	createHTTPRoute  bool
 	createdNamespace bool
@@ -738,12 +737,6 @@ func (s *MCPGatewayExtensionSetup) WithCACertBundleRef(name, key string) *MCPGat
 	return s
 }
 
-// WithProtocolMode sets the protocol mode on the MCPGatewayExtension
-func (s *MCPGatewayExtensionSetup) WithProtocolMode(mode mcpv1.ProtocolMode) *MCPGatewayExtensionSetup {
-	s.protocolMode = mode
-	return s
-}
-
 // Build creates the MCPGatewayExtension and ReferenceGrant objects (without registering them)
 func (s *MCPGatewayExtensionSetup) Build() *MCPGatewayExtensionSetup {
 	spec := mcpv1.MCPGatewayExtensionSpec{
@@ -771,10 +764,6 @@ func (s *MCPGatewayExtensionSetup) Build() *MCPGatewayExtensionSetup {
 	if s.caCertBundleRef != nil {
 		spec.CACertBundleRef = s.caCertBundleRef
 	}
-	if s.protocolMode != "" {
-		spec.ProtocolMode = s.protocolMode
-	}
-
 	s.extension = &mcpv1.MCPGatewayExtension{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      s.name,
