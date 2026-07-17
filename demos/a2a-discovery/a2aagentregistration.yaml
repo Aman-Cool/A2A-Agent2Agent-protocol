@@ -1,0 +1,12 @@
+apiVersion: mcp.kuadrant.io/v1alpha1
+kind: A2AAgentRegistration
+metadata:
+  name: weather-agent
+  namespace: mcp-test
+spec:
+  agentPrefix: weather # requests to /a2a/mcp-test/weather route to this agent
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: a2a-server-route
+  state: Enabled
