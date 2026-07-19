@@ -35,8 +35,11 @@ spec:
           value: "a2a-test-agent"
         - name: SKILLS
           value: "forecast,alerts"
+        # the card must advertise the agent's gateway path (matching the mcp-test/weather
+        # registration): the broker fail-closes on a card whose interface URL points anywhere
+        # else, since a direct-upstream URL would send clients around the gateway
         - name: AGENT_URL
-          value: "http://a2a-test-server.mcp-test.svc.cluster.local:9090/a2a"
+          value: "http://mcp.127-0-0-1.sslip.io:8001/a2a/mcp-test/weather"
         resources:
           limits:
             memory: "128Mi"

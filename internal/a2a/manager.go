@@ -129,11 +129,19 @@ func (b *Broker) refreshCard(ctx context.Context, namespace, prefix string, agen
 		sum := sha256.Sum256(body)
 		sha := hex.EncodeToString(sum[:])
 		if hasPrev && sha == prev.SHA256 {
-			// content unchanged despite a 200 (upstream sent no validators) — refresh metadata only
+			// content unchanged despite a 200 (upstream sent no validators) — refresh metadata
+			// only; a stored entry already passed validation when it was stored
 			prev.FetchedAt = time.Now()
 			prev.ETag = resp.Header.Get("ETag")
 			prev.LastModified = resp.Header.Get("Last-Modified")
 			b.storeIfCurrent(namespace, prefix, agent, prev)
+			return
+		}
+		b.mu.RLock()
+		host := b.externalHost
+		b.mu.RUnlock()
+		if reason := validateCard(body, host, namespace, prefix); reason != "" {
+			b.failCardValidation(namespace, prefix, agent, reason)
 			return
 		}
 		b.storeIfCurrent(namespace, prefix, agent, CardEntry{
@@ -155,16 +163,39 @@ func (b *Broker) refreshCard(ctx context.Context, namespace, prefix string, agen
 // after the agent was removed or replaced (a new registration reusing the same
 // namespace-qualified prefix); without this check that stale result would clobber the current
 // agent's card. Identity is compared by card URL — stable across benign config churn, unlike
-// the agent pointer. Holding the read lock across the store write keeps the check and the write
+// the agent pointer. Holding the lock across the store write keeps the check and the write
 // atomic against SetAgents; the lock order (broker lock, then store lock) is never inverted.
+// Storing a validated card also clears any earlier validation failure, so an agent recovers
+// as soon as its upstream serves a conforming card again.
 func (b *Broker) storeIfCurrent(namespace, prefix string, agent *config.A2AAgent, entry CardEntry) {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-	cur, ok := b.agents[namespace+"/"+prefix]
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	key := namespace + "/" + prefix
+	cur, ok := b.agents[key]
 	if !ok || cardURL(cur) != cardURL(agent) {
 		return
 	}
+	delete(b.invalid, key)
 	b.store.Set(namespace, prefix, entry)
+}
+
+// failCardValidation marks the agent's card invalid and drops any cached copy, so the agent
+// is excluded from the catalog and its card is not served. This is deliberately NOT
+// stale-on-error: a successful fetch of a non-conforming card is a configuration or security
+// state, not a transient blip — serving the previous card would mask that the agent now
+// advertises a gateway bypass. The same current-agent guard as storeIfCurrent applies.
+func (b *Broker) failCardValidation(namespace, prefix string, agent *config.A2AAgent, reason string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	key := namespace + "/" + prefix
+	cur, ok := b.agents[key]
+	if !ok || cardURL(cur) != cardURL(agent) {
+		return
+	}
+	b.invalid[key] = reason
+	b.store.Delete(namespace, prefix)
+	b.logger.Warn("a2a card failed validation, agent excluded from discovery",
+		"agent", agent.Name, "reason", reason)
 }
 
 // cardURL returns the agent's AgentCard URL: the explicit AgentCardURL override if set,

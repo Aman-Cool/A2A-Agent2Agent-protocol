@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -30,8 +31,14 @@ func (b *Broker) register(a *config.A2AAgent) {
 	b.mu.Unlock()
 }
 
+// gatewayCard returns a minimal card whose interface advertises the agent's gateway path,
+// so it passes fail-closed interface validation (no external host set in tests).
+func gatewayCard(namespace, prefix string) string {
+	return `{"name":"test","supportedInterfaces":[{"url":"http://gw.example/a2a/` + namespace + `/` + prefix + `"}]}`
+}
+
 func TestRefreshCard_200StoresRawCard(t *testing.T) {
-	const card = `{"name":"weather","supportedInterfaces":[]}`
+	card := gatewayCard("mcp-test", "weather")
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != wellKnownAgentCard {
 			t.Errorf("unexpected card path %q", r.URL.Path)
@@ -78,7 +85,7 @@ func TestRefreshCard_OversizeRejected(t *testing.T) {
 }
 
 func TestRefreshCard_SkipsStoreWhenAgentNotCurrent(t *testing.T) {
-	const card = `{"name":"weather"}`
+	card := gatewayCard("mcp-test", "weather")
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(card))
 	}))
@@ -94,7 +101,7 @@ func TestRefreshCard_SkipsStoreWhenAgentNotCurrent(t *testing.T) {
 }
 
 func TestRefreshCard_DoesNotClobberReplacedAgent(t *testing.T) {
-	const oldCard = `{"name":"old"}`
+	oldCard := gatewayCard("mcp-test", "weather")
 	oldSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(oldCard))
 	}))
@@ -212,16 +219,20 @@ func TestCardURL(t *testing.T) {
 }
 
 func TestRefreshAll_RefreshesEveryAgentUnderItsPathKey(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"name":"x"}`))
+	srvA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(gatewayCard("ns-a", "weather")))
 	}))
-	defer srv.Close()
+	defer srvA.Close()
+	srvB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(gatewayCard("ns-b", "search")))
+	}))
+	defer srvB.Close()
 
 	b := newTestBroker()
 	// two agents in different namespaces; keys are {namespace}/{agentPrefix}, distinct from Name
 	b.SetAgents([]*config.A2AAgent{
-		{Name: "ns-a/weather-agent", AgentPrefix: "weather", URL: srv.URL},
-		{Name: "ns-b/search-agent", AgentPrefix: "search", URL: srv.URL},
+		{Name: "ns-a/weather-agent", AgentPrefix: "weather", URL: srvA.URL},
+		{Name: "ns-b/search-agent", AgentPrefix: "search", URL: srvB.URL},
 	})
 	b.refreshAll(context.Background())
 
@@ -234,7 +245,7 @@ func TestRefreshAll_RefreshesEveryAgentUnderItsPathKey(t *testing.T) {
 }
 
 func TestSetAgents_RefreshesNewAgentCard(t *testing.T) {
-	const card = `{"name":"weather"}`
+	card := gatewayCard("mcp-test", "weather")
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(card))
 	}))
@@ -291,5 +302,111 @@ func TestSetAgents_EvictsRemovedCard(t *testing.T) {
 	b.SetAgents([]*config.A2AAgent{{Name: "mcp-test/search-agent", AgentPrefix: "search"}})
 	if _, ok := b.store.Get("mcp-test", "weather"); ok {
 		t.Fatal("removed agent's card must be evicted from the store")
+	}
+}
+
+func TestRefreshCard_NonGatewayCardFailsClosed(t *testing.T) {
+	// upstream switches from a conforming card to one advertising its own address
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"supportedInterfaces":[{"url":"http://agent.internal:9090/a2a"}]}`))
+	}))
+	defer srv.Close()
+
+	b := newTestBroker()
+	a := agentFor(srv.URL)
+	b.register(a)
+	b.store.Set("mcp-test", "weather", CardEntry{Raw: []byte(gatewayCard("mcp-test", "weather"))})
+
+	b.refreshCard(context.Background(), "mcp-test", "weather", a)
+
+	// fail closed, not stale-on-error: the previously-valid card must be dropped, not served
+	if _, ok := b.store.Get("mcp-test", "weather"); ok {
+		t.Fatal("a card that fails validation must drop the cached copy")
+	}
+	if !b.cardRejected("mcp-test", "weather") {
+		t.Fatal("agent must be marked invalid after failed card validation")
+	}
+
+	// the card endpoint refuses to serve
+	rec := httptest.NewRecorder()
+	b.ServeAgentCard(rec, httptest.NewRequest(http.MethodGet, "/a2a/mcp-test/weather/.well-known/agent-card.json", nil))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("invalid card must not be served, got %d", rec.Code)
+	}
+
+	// and the agent never enters the catalog
+	rec = httptest.NewRecorder()
+	b.ServeAPICatalog(rec, httptest.NewRequest(http.MethodGet, apiCatalogPath, nil))
+	if strings.Contains(rec.Body.String(), "weather") {
+		t.Fatalf("invalid agent must be excluded from the catalog, got %s", rec.Body.String())
+	}
+}
+
+func TestRefreshCard_UnparseableCardFailsClosed(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("not json"))
+	}))
+	defer srv.Close()
+
+	b := newTestBroker()
+	a := agentFor(srv.URL)
+	b.register(a)
+	b.refreshCard(context.Background(), "mcp-test", "weather", a)
+
+	if !b.cardRejected("mcp-test", "weather") {
+		t.Fatal("an unparseable card must fail validation")
+	}
+}
+
+func TestRefreshCard_RecoversAfterCardFixed(t *testing.T) {
+	valid := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if valid {
+			_, _ = w.Write([]byte(gatewayCard("mcp-test", "weather")))
+			return
+		}
+		_, _ = w.Write([]byte(`{"url":"http://agent.internal:9090/a2a"}`))
+	}))
+	defer srv.Close()
+
+	b := newTestBroker()
+	a := agentFor(srv.URL)
+	b.register(a)
+
+	b.refreshCard(context.Background(), "mcp-test", "weather", a)
+	if !b.cardRejected("mcp-test", "weather") {
+		t.Fatal("non-gateway card must be rejected first")
+	}
+
+	// upstream fixes the card -> the next refresh clears the failure and serves again
+	valid = true
+	b.refreshCard(context.Background(), "mcp-test", "weather", a)
+	if b.cardRejected("mcp-test", "weather") {
+		t.Fatal("a fixed card must clear the validation failure")
+	}
+	if _, ok := b.store.Get("mcp-test", "weather"); !ok {
+		t.Fatal("a fixed card must be cached and servable again")
+	}
+}
+
+func TestValidation_UsesExternalHostFromConfig(t *testing.T) {
+	// card advertises the right path on the WRONG host; with the gateway host known
+	// from config, the host check must reject it
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"supportedInterfaces":[{"url":"http://evil.example/a2a/mcp-test/weather"}]}`))
+	}))
+	defer srv.Close()
+
+	b := newTestBroker()
+	cfg := &config.MCPServersConfig{MCPGatewayExternalHostname: "gw.example"}
+	cfg.SetA2AAgents([]*config.A2AAgent{{Name: "mcp-test/weather-agent", AgentPrefix: "weather", URL: srv.URL}})
+	b.OnConfigChange(context.Background(), cfg)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for !b.cardRejected("mcp-test", "weather") {
+		if time.Now().After(deadline) {
+			t.Fatal("wrong-host card must be rejected when the gateway host is configured")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }

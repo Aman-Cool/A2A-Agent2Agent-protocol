@@ -27,8 +27,10 @@ type Broker struct {
 	client   *http.Client
 	interval time.Duration
 
-	mu     sync.RWMutex
-	agents map[string]*config.A2AAgent // keyed by "{namespace}/{agentPrefix}"
+	mu           sync.RWMutex
+	agents       map[string]*config.A2AAgent // keyed by "{namespace}/{agentPrefix}"
+	invalid      map[string]string           // key -> reason the card failed validation; excluded from discovery
+	externalHost string                      // gateway public host, for card interface validation
 }
 
 var _ config.Observer = (*Broker)(nil)
@@ -45,11 +47,16 @@ func NewBroker(logger *slog.Logger, store CardStore, interval time.Duration) *Br
 		client:   &http.Client{Timeout: cardFetchTimeout},
 		interval: interval,
 		agents:   map[string]*config.A2AAgent{},
+		invalid:  map[string]string{},
 	}
 }
 
-// OnConfigChange implements config.Observer: it swaps in the latest enabled agent set.
+// OnConfigChange implements config.Observer: it swaps in the latest enabled agent set and
+// the gateway public host used for card interface validation.
 func (b *Broker) OnConfigChange(_ context.Context, cfg *config.MCPServersConfig) {
+	b.mu.Lock()
+	b.externalHost = cfg.GetExternalHostname()
+	b.mu.Unlock()
 	b.SetAgents(cfg.ListA2AAgents())
 }
 
@@ -65,6 +72,12 @@ func (b *Broker) SetAgents(agents []*config.A2AAgent) {
 	}
 	b.mu.Lock()
 	b.agents = next
+	// drop validation state for agents that are no longer registered
+	for key := range b.invalid {
+		if _, ok := next[key]; !ok {
+			delete(b.invalid, key)
+		}
+	}
 	b.mu.Unlock()
 	b.evictStaleCards(next)
 	b.refreshNewCards(next)
@@ -88,6 +101,14 @@ func (b *Broker) GetAgentByPath(namespace, prefix string) (*config.A2AAgent, boo
 	defer b.mu.RUnlock()
 	a, ok := b.agents[namespace+"/"+prefix]
 	return a, ok
+}
+
+// cardRejected reports whether the agent's card failed interface validation.
+func (b *Broker) cardRejected(namespace, prefix string) bool {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	_, bad := b.invalid[namespace+"/"+prefix]
+	return bad
 }
 
 // pathKey is the namespace-qualified routing key "{namespace}/{agentPrefix}". The agent's

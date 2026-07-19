@@ -32,6 +32,11 @@ func (b *Broker) ServeAgentCard(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	if b.cardRejected(namespace, prefix) {
+		// fail closed: a card that failed interface validation is never served
+		http.Error(w, "agent card failed validation", http.StatusServiceUnavailable)
+		return
+	}
 	entry, ok := b.store.Get(namespace, prefix)
 	if !ok {
 		// registered, but the card has not been fetched yet — the client can retry
@@ -72,6 +77,10 @@ func (b *Broker) ServeAPICatalog(w http.ResponseWriter, r *http.Request) {
 	b.mu.RLock()
 	items := make([]linkTarget, 0, len(b.agents))
 	for key := range b.agents { // key is "{namespace}/{agentPrefix}"
+		if _, bad := b.invalid[key]; bad {
+			// fail closed: an agent whose card failed validation never enters the catalog
+			continue
+		}
 		items = append(items, linkTarget{Href: a2aPathPrefix + key})
 	}
 	b.mu.RUnlock()
