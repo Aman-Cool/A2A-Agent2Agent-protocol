@@ -8,52 +8,79 @@ import (
 )
 
 // agentInterfaces is the minimal read-only view of an AgentCard used for fail-closed
-// validation: the v1.0 supportedInterfaces list, with the v0.3 top-level url as a
-// fallback. The raw card bytes are never modified — a signed card is still served
-// verbatim; validation only decides whether it is served at all.
+// validation: the v1.0 supportedInterfaces list (url + protocolBinding + protocolVersion),
+// with the v0.3 top-level url as a fallback. The raw card bytes are never modified — a signed
+// card is still served verbatim; validation only decides whether it is served at all.
 type agentInterfaces struct {
-	URL                 string `json:"url"`
-	SupportedInterfaces []struct {
-		URL string `json:"url"`
-	} `json:"supportedInterfaces"`
+	URL                 string           `json:"url"`
+	SupportedInterfaces []agentInterface `json:"supportedInterfaces"`
 }
 
-// validateCard checks that every interface URL a card advertises resolves to the
-// agent's gateway path. A spec-following client invokes the URL from the card's
-// supportedInterfaces, so a verbatim-served card advertising any non-gateway URL —
-// under any binding — would send clients around the gateway's policy perimeter.
-// It returns a non-empty reason when the card must not be served (fail closed):
-// unparseable JSON, no advertised interface, or any interface pointing away from
-// the gateway. externalHost is compared by hostname when known; when empty, only
-// the path is validated.
+type agentInterface struct {
+	URL             string `json:"url"`
+	ProtocolBinding string `json:"protocolBinding"`
+	ProtocolVersion string `json:"protocolVersion"`
+}
+
+// validateCard checks that every interface a card advertises is one a stock client can only
+// use to reach the gateway. A spec-following client selects a declared interface and invokes
+// its url with its binding, so a verbatim-served card must not advertise any interface that
+// would take a client off the gateway or onto a transport the gateway does not front. It
+// returns a non-empty reason when the card must not be served (fail closed):
+//
+//   - unparseable JSON, or no advertised interface;
+//   - a URL that is not http(s), not the agent's gateway path, or (when the gateway host is
+//     known) not the gateway host;
+//   - a binding other than JSONRPC — the gateway fronts only JSONRPC, so a GRPC or HTTP+JSON
+//     interface (which the reference client's transport selection would pick) is a bypass;
+//   - a protocolVersion that is not a v1 major — the router is v1-specific.
+//
+// externalHost is compared by hostname when known; when empty, host is not checked. Port and
+// scheme-is-https are the gateway listener's concern (the broker does not know its own external
+// scheme or port), so only the http(s) family is enforced here.
 func validateCard(raw []byte, externalHost, namespace, prefix string) string {
 	var card agentInterfaces
 	if err := json.Unmarshal(raw, &card); err != nil {
 		return "card is not valid JSON"
 	}
-	urls := make([]string, 0, len(card.SupportedInterfaces)+1)
-	for i := range card.SupportedInterfaces {
-		urls = append(urls, card.SupportedInterfaces[i].URL)
+	ifaces := card.SupportedInterfaces
+	if len(ifaces) == 0 && card.URL != "" {
+		ifaces = []agentInterface{{URL: card.URL}}
 	}
-	if len(urls) == 0 && card.URL != "" {
-		urls = append(urls, card.URL)
-	}
-	if len(urls) == 0 {
+	if len(ifaces) == 0 {
 		return "card advertises no interface URL"
 	}
 	wantPath := "/a2a/" + namespace + "/" + prefix
 	wantHost := hostOnly(externalHost)
-	for _, raw := range urls {
-		parsed, err := url.Parse(raw)
-		if err != nil || parsed.Host == "" {
-			return fmt.Sprintf("card advertises unparseable interface URL %q", raw)
+	for i := range ifaces {
+		if reason := validateInterface(ifaces[i], wantPath, wantHost); reason != "" {
+			return reason
 		}
-		if strings.TrimRight(parsed.Path, "/") != wantPath {
-			return fmt.Sprintf("card advertises non-gateway interface URL %q (want path %s)", raw, wantPath)
-		}
-		if wantHost != "" && parsed.Hostname() != wantHost {
-			return fmt.Sprintf("card advertises interface host %q, gateway host is %q", parsed.Hostname(), wantHost)
-		}
+	}
+	return ""
+}
+
+func validateInterface(iface agentInterface, wantPath, wantHost string) string {
+	parsed, err := url.Parse(iface.URL)
+	if err != nil || parsed.Host == "" {
+		return fmt.Sprintf("card advertises unparseable interface URL %q", iface.URL)
+	}
+	if s := strings.ToLower(parsed.Scheme); s != "http" && s != "https" {
+		return fmt.Sprintf("card advertises non-http(s) interface URL %q", iface.URL)
+	}
+	if strings.TrimRight(parsed.Path, "/") != wantPath {
+		return fmt.Sprintf("card advertises non-gateway interface URL %q (want path %s)", iface.URL, wantPath)
+	}
+	if wantHost != "" && parsed.Hostname() != wantHost {
+		return fmt.Sprintf("card advertises interface host %q, gateway host is %q", parsed.Hostname(), wantHost)
+	}
+	// empty binding defaults to JSONRPC (the preferred transport); anything else is a bypass
+	// onto a transport the gateway does not serve.
+	if b := iface.ProtocolBinding; b != "" && !strings.EqualFold(b, "JSONRPC") {
+		return fmt.Sprintf("card advertises interface with unsupported binding %q (gateway fronts JSONRPC only)", b)
+	}
+	if v := iface.ProtocolVersion; v != "" && v != "1" && !strings.HasPrefix(v, "1.") {
+		return fmt.Sprintf("card advertises interface protocolVersion %q, gateway is v1-specific", v)
 	}
 	return ""
 }

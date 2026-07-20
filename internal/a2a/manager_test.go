@@ -487,3 +487,48 @@ func waitForCard(t *testing.T, b *Broker, want, msg string) {
 		return ok && string(e.Raw) == want
 	})
 }
+
+func TestRefreshCard_StaleFetchDoesNotClobberRotatedCredential(t *testing.T) {
+	// upstream serves a valid card; while a fetch for the OLD credential is in flight, the
+	// registration rotates its credential — the fingerprint guard must drop the stale result
+	card := gatewayCard("mcp-test", "weather")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(card))
+	}))
+	defer srv.Close()
+
+	b := newTestBroker()
+	oldAgent := &config.A2AAgent{Name: "mcp-test/weather-agent", AgentPrefix: "weather", URL: srv.URL, Credential: "Bearer old"}
+	b.register(oldAgent)
+	// the current registration already rotated to a new credential (same URL)
+	b.register(&config.A2AAgent{Name: "mcp-test/weather-agent", AgentPrefix: "weather", URL: srv.URL, Credential: "Bearer new"})
+
+	// a fetch that ran against the OLD credential completes now
+	b.refreshCard(context.Background(), "mcp-test", "weather", oldAgent)
+
+	if _, ok := b.store.Get("mcp-test", "weather"); ok {
+		t.Fatal("a fetch against a superseded credential must not be committed")
+	}
+}
+
+func TestRefreshCard_StaleFetchDoesNotClobberOnGatewayCAChange(t *testing.T) {
+	b := newTestBroker()
+	card := gatewayCard("mcp-test", "weather")
+	// the gateway CA bundle rotates while this fetch is in flight; refreshCard captured the
+	// pre-rotation value (empty) at its start, so the commit-time compare must mismatch
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		b.mu.Lock()
+		b.caCertPEM = "rotated-bundle"
+		b.mu.Unlock()
+		_, _ = w.Write([]byte(card))
+	}))
+	defer srv.Close()
+
+	a := agentFor(srv.URL)
+	b.register(a)
+	b.refreshCard(context.Background(), "mcp-test", "weather", a)
+
+	if _, ok := b.store.Get("mcp-test", "weather"); ok {
+		t.Fatal("a fetch captured under an old gateway CA must not commit after the bundle rotates")
+	}
+}

@@ -40,6 +40,25 @@ func TestValidateCard(t *testing.T) {
 			wantReason: "non-gateway interface URL",
 		},
 		{
+			name:       "non-http scheme at the gateway path",
+			card:       `{"supportedInterfaces":[{"url":"ftp://gw.example/a2a/mcp-test/weather"}]}`,
+			wantReason: "non-http(s)",
+		},
+		{
+			name:       "non-JSONRPC binding at the gateway path",
+			card:       `{"supportedInterfaces":[{"url":"http://gw.example/a2a/mcp-test/weather","protocolBinding":"GRPC"}]}`,
+			wantReason: "unsupported binding",
+		},
+		{
+			name: "explicit JSONRPC binding passes",
+			card: `{"supportedInterfaces":[{"url":"http://gw.example/a2a/mcp-test/weather","protocolBinding":"JSONRPC","protocolVersion":"1.0"}]}`,
+		},
+		{
+			name:       "non-v1 protocol version",
+			card:       `{"supportedInterfaces":[{"url":"http://gw.example/a2a/mcp-test/weather","protocolVersion":"0.3"}]}`,
+			wantReason: "v1-specific",
+		},
+		{
 			name:       "not JSON",
 			card:       `not a card`,
 			wantReason: "not valid JSON",

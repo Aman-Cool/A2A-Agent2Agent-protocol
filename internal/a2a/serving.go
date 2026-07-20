@@ -69,7 +69,10 @@ func parseCardPath(path string) (namespace, prefix string, ok bool) {
 }
 
 // ServeAPICatalog serves the RFC 9727 API Catalog as an RFC 9264 Linkset, listing every enabled
-// agent's gateway path so a client can discover all agents without knowing upstream addresses.
+// agent that has a currently servable card, so a client can discover all agents without knowing
+// upstream addresses. Catalog eligibility means a validated card is cached now — an agent whose
+// card failed validation, or whose card has not been fetched yet, is not listed, so the catalog
+// never advertises a path whose card GET would fail.
 func (b *Broker) ServeAPICatalog(w http.ResponseWriter, r *http.Request) {
 	_, span := a2aTracer().Start(r.Context(), "a2a.ServeAPICatalog")
 	defer span.End()
@@ -78,8 +81,11 @@ func (b *Broker) ServeAPICatalog(w http.ResponseWriter, r *http.Request) {
 	items := make([]linkTarget, 0, len(b.agents))
 	for key := range b.agents { // key is "{namespace}/{agentPrefix}"
 		if _, bad := b.invalid[key]; bad {
-			// fail closed: an agent whose card failed validation never enters the catalog
-			continue
+			continue // fail closed: a card that failed validation never enters the catalog
+		}
+		namespace, prefix, _ := strings.Cut(key, "/")
+		if _, cached := b.store.Get(namespace, prefix); !cached {
+			continue // not yet fetched/validated: don't advertise a path whose card GET 503s
 		}
 		items = append(items, linkTarget{Href: a2aPathPrefix + key})
 	}

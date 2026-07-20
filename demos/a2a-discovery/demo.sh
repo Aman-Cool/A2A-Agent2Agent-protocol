@@ -33,6 +33,7 @@ wait_for() {
   done
 }
 card_ready()    { [ "$(curl -s -o /dev/null -w '%{http_code}' "$CARD")" = "200" ]; }
+catalog_lists() { curl -fsS "$CATALOG" 2>/dev/null | grep -q weather; }
 catalog_clear() { ! curl -fsS "$CATALOG" 2>/dev/null | grep -q weather; }
 
 PF=""
@@ -62,6 +63,8 @@ kubectl wait --for=condition=Ready --timeout=60s \
 pause
 
 banner "Step 3 — the catalog now lists the agent (hot config reload)"
+# the agent enters the catalog once its card is fetched and validated, not merely on registration
+wait_for "the agent to enter the catalog" 60 catalog_lists
 curl -fsS "$CATALOG" | jq .
 pause
 

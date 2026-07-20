@@ -88,6 +88,14 @@ func (b *Broker) refreshNewCards(prev, agents map[string]*config.A2AAgent) {
 // place — stale-on-error — so a transient upstream blip never drops a servable card. The
 // card is stored as raw bytes so a signed card's JWS signature survives byte-for-byte.
 func (b *Broker) refreshCard(ctx context.Context, namespace, prefix string, agent *config.A2AAgent) {
+	key := namespace + "/" + prefix
+	// snapshot the gateway trust inputs the fetch runs against, so the commit can verify none
+	// of them changed under the (lock-free) fetch before accepting its result
+	b.mu.RLock()
+	gwCA := b.caCertPEM
+	host := b.externalHost
+	b.mu.RUnlock()
+
 	prev, hasPrev := b.store.Get(namespace, prefix)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, cardURL(agent), nil)
@@ -108,7 +116,7 @@ func (b *Broker) refreshCard(ctx context.Context, namespace, prefix string, agen
 		}
 	}
 
-	client, err := b.clientFor(namespace+"/"+prefix, agent)
+	client, err := b.clientFor(key, agent)
 	if err != nil {
 		b.logger.Warn("a2a card client build failed, keeping stale card", "agent", agent.Name, "error", err)
 		return
@@ -123,7 +131,7 @@ func (b *Broker) refreshCard(ctx context.Context, namespace, prefix string, agen
 	switch {
 	case resp.StatusCode == http.StatusNotModified && hasPrev:
 		prev.FetchedAt = time.Now()
-		b.storeIfCurrent(namespace, prefix, agent, prev)
+		b.storeIfCurrent(namespace, prefix, agent, gwCA, host, prev)
 	case resp.StatusCode == http.StatusOK:
 		body, err := io.ReadAll(io.LimitReader(resp.Body, maxCardBytes+1))
 		if err != nil {
@@ -144,17 +152,14 @@ func (b *Broker) refreshCard(ctx context.Context, namespace, prefix string, agen
 			prev.FetchedAt = time.Now()
 			prev.ETag = resp.Header.Get("ETag")
 			prev.LastModified = resp.Header.Get("Last-Modified")
-			b.storeIfCurrent(namespace, prefix, agent, prev)
+			b.storeIfCurrent(namespace, prefix, agent, gwCA, host, prev)
 			return
 		}
-		b.mu.RLock()
-		host := b.externalHost
-		b.mu.RUnlock()
 		if reason := validateCard(body, host, namespace, prefix); reason != "" {
-			b.failCardValidation(namespace, prefix, agent, reason)
+			b.failCardValidation(namespace, prefix, agent, gwCA, host, reason)
 			return
 		}
-		b.storeIfCurrent(namespace, prefix, agent, CardEntry{
+		b.storeIfCurrent(namespace, prefix, agent, gwCA, host, CardEntry{
 			Raw:          body,
 			ETag:         resp.Header.Get("ETag"),
 			LastModified: resp.Header.Get("Last-Modified"),
@@ -177,12 +182,11 @@ func (b *Broker) refreshCard(ctx context.Context, namespace, prefix string, agen
 // atomic against SetAgents; the lock order (broker lock, then store lock) is never inverted.
 // Storing a validated card also clears any earlier validation failure, so an agent recovers
 // as soon as its upstream serves a conforming card again.
-func (b *Broker) storeIfCurrent(namespace, prefix string, agent *config.A2AAgent, entry CardEntry) {
+func (b *Broker) storeIfCurrent(namespace, prefix string, agent *config.A2AAgent, gwCA, host string, entry CardEntry) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	key := namespace + "/" + prefix
-	cur, ok := b.agents[key]
-	if !ok || cardURL(cur) != cardURL(agent) {
+	if !b.stillCurrent(key, agent, gwCA, host) {
 		return
 	}
 	delete(b.invalid, key)
@@ -194,12 +198,11 @@ func (b *Broker) storeIfCurrent(namespace, prefix string, agent *config.A2AAgent
 // stale-on-error: a successful fetch of a non-conforming card is a configuration or security
 // state, not a transient blip — serving the previous card would mask that the agent now
 // advertises a gateway bypass. The same current-agent guard as storeIfCurrent applies.
-func (b *Broker) failCardValidation(namespace, prefix string, agent *config.A2AAgent, reason string) {
+func (b *Broker) failCardValidation(namespace, prefix string, agent *config.A2AAgent, gwCA, host, reason string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	key := namespace + "/" + prefix
-	cur, ok := b.agents[key]
-	if !ok || cardURL(cur) != cardURL(agent) {
+	if !b.stillCurrent(key, agent, gwCA, host) {
 		return
 	}
 	b.invalid[key] = reason
@@ -208,13 +211,28 @@ func (b *Broker) failCardValidation(namespace, prefix string, agent *config.A2AA
 		"agent", agent.Name, "reason", reason)
 }
 
+// stillCurrent reports whether the agent and gateway trust inputs a fetch ran against are still
+// the current config for key. Called under b.mu. Comparing the full fetch fingerprint — card URL,
+// credential, per-agent CA, gateway CA bundle, and validation host — means a stale fetch (a
+// removed/replaced agent, a rotated credential or CA, or a changed gateway trust/host) can never
+// clobber the newer config's card. Identity is by value, not pointer, so benign config churn that
+// re-creates an equivalent agent does not spuriously discard a good fetch.
+func (b *Broker) stillCurrent(key string, agent *config.A2AAgent, gwCA, host string) bool {
+	cur, ok := b.agents[key]
+	return ok && agentFingerprint(cur) == agentFingerprint(agent) && b.caCertPEM == gwCA && b.externalHost == host
+}
+
+// agentFingerprint captures the per-agent inputs that shape a card fetch: the effective card URL,
+// the discovery credential, and the per-agent CA.
+func agentFingerprint(a *config.A2AAgent) string {
+	return cardURL(a) + "\x00" + a.Credential + "\x00" + a.CACert
+}
+
 // fetchInputsChanged reports whether the inputs that shape a card fetch differ between two
 // snapshots of the same agent: the effective card URL (endpoint or agentCardURL override),
 // the discovery credential, or the per-agent CA.
 func fetchInputsChanged(old, cur *config.A2AAgent) bool {
-	return cardURL(old) != cardURL(cur) ||
-		old.Credential != cur.Credential ||
-		old.CACert != cur.CACert
+	return agentFingerprint(old) != agentFingerprint(cur)
 }
 
 // cardURL returns the agent's AgentCard URL: the explicit AgentCardURL override if set,

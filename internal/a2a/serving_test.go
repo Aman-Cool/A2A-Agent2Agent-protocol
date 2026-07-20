@@ -90,6 +90,9 @@ func TestServeAPICatalog(t *testing.T) {
 		{Name: "mcp-test/weather-agent", AgentPrefix: "weather"},
 		{Name: "mcp-test/search-agent", AgentPrefix: "search"},
 	})
+	// catalog eligibility requires a currently cached card
+	b.store.Set("mcp-test", "weather", CardEntry{Raw: []byte(gatewayCard("mcp-test", "weather"))})
+	b.store.Set("mcp-test", "search", CardEntry{Raw: []byte(gatewayCard("mcp-test", "search"))})
 
 	req := httptest.NewRequest(http.MethodGet, apiCatalogPath, nil)
 	rec := httptest.NewRecorder()
@@ -126,5 +129,22 @@ func TestServeAPICatalog_EmptyWhenNoAgents(t *testing.T) {
 	}
 	if len(doc.Linkset) != 1 || len(doc.Linkset[0].Item) != 0 {
 		t.Fatalf("expected an empty item list, got %+v", doc.Linkset)
+	}
+}
+
+func TestServeAPICatalog_ExcludesUncachedAgent(t *testing.T) {
+	b := NewBroker(slog.Default(), NewMemoryStore(), time.Minute)
+	b.SetAgents([]*config.A2AAgent{{Name: "mcp-test/weather-agent", AgentPrefix: "weather"}})
+	// registered but no card fetched yet -> must not be advertised (its card GET would 503)
+
+	rec := httptest.NewRecorder()
+	b.ServeAPICatalog(rec, httptest.NewRequest(http.MethodGet, apiCatalogPath, nil))
+
+	var doc linkset
+	if err := json.Unmarshal(rec.Body.Bytes(), &doc); err != nil {
+		t.Fatalf("catalog not json: %v", err)
+	}
+	if len(doc.Linkset) != 1 || len(doc.Linkset[0].Item) != 0 {
+		t.Fatalf("a registered-but-uncached agent must not be listed, got %+v", doc.Linkset)
 	}
 }
