@@ -415,6 +415,26 @@ When the broker forwards headers to a user-specific upstream, internal gateway h
 
 When an MCPVirtualServer is configured that includes a specific user-specific tool, only that tool is returned — user-specific tools are subject to the same virtual server filtering as cached tools.
 
+## A2A discovery
+
+These run against the base HTTP listener (`mcp.127-0-0-1.sslip.io:8001`), whose public host matches the a2a-test-server's advertised card URL — required for fail-closed card validation. See `a2a_discovery_test.go`.
+
+### [Happy,A2A] Agent is listed in the API Catalog and its card is served verbatim
+
+When an `A2AAgentRegistration` targeting the a2a-test-server's route is created, the registration reaches Ready, the agent's gateway path appears in `GET /.well-known/api-catalog` once its card is fetched and validated, and `GET /a2a/{ns}/{prefix}/.well-known/agent-card.json` returns the upstream card byte-for-byte — still carrying the exact gateway URL the agent advertised, proving it was not rewritten.
+
+### [Security,A2A] A card whose advertised path does not match the registration fails closed
+
+When the a2a-test-server (which advertises `/a2a/mcp-test/weather`) is registered under a different prefix, its served card no longer resolves to that agent's gateway path, so interface validation rejects it: the agent never enters the catalog and its card endpoint returns 503.
+
+### [A2A] Deregistration removes the agent from the API Catalog
+
+When the `A2AAgentRegistration` is deleted, the agent's gateway path is removed from `GET /.well-known/api-catalog` within a reconcile cycle, with no gateway restart.
+
+### [Happy,A2A] MCP tool discovery is unaffected while an A2A agent is registered
+
+While an A2A agent is registered and cataloged, MCP `tools/list` through the same gateway still succeeds — A2A support is additive and does not disturb MCP traffic.
+
 ## Common pitfalls
 
 - MCPServerRegistrations with empty prefix: `strings.HasPrefix(name, "")` matches all tools, including broker meta-tools (discover_tools, select_tools). Always use a non-empty prefix in tests.

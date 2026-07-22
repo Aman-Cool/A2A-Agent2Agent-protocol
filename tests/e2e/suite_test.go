@@ -57,6 +57,7 @@ import (
 	gatewayv1beta1 "sigs.k8s.io/gateway-api/apis/v1beta1"
 
 	mcpv1 "github.com/Kuadrant/mcp-gateway/api/v1"
+	mcpv1alpha1 "github.com/Kuadrant/mcp-gateway/api/v1alpha1"
 )
 
 var (
@@ -82,6 +83,7 @@ func setupK8sClient() {
 	testScheme = runtime.NewScheme()
 	Expect(scheme.AddToScheme(testScheme)).To(Succeed())
 	Expect(mcpv1.AddToScheme(testScheme)).To(Succeed())
+	Expect(mcpv1alpha1.AddToScheme(testScheme)).To(Succeed())
 	Expect(gatewayapiv1.Install(testScheme)).To(Succeed())
 	Expect(gatewayv1beta1.Install(testScheme)).To(Succeed())
 	Expect(istionetv1beta1.AddToScheme(testScheme)).To(Succeed())
