@@ -151,7 +151,7 @@ func (s *ExtProcServer) Process(stream extProcV3.ExternalProcessor_ProcessServer
 		mcpRequest          *routing.MCPRequest
 		ctx                 = stream.Context()
 		rewriter            *sseRewriter // nil until a tool call response arrives
-		a2a                 *a2aState // non-nil for /a2a requests (spike)
+		a2a                 *a2aState    // non-nil for /a2a requests (spike)
 	)
 	span := trace.SpanFromContext(ctx)
 	defer func() { span.End() }()
