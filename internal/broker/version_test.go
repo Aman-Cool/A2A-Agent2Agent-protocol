@@ -1,6 +1,7 @@
 package broker
 
 import (
+	"context"
 	"log/slog"
 	"testing"
 
@@ -76,4 +77,8 @@ func (m *mockActiveServer) ToolsCacheMetadata() upstream.CacheMetadata {
 }
 func (m *mockActiveServer) PromptsCacheMetadata() upstream.CacheMetadata {
 	return upstream.CacheMetadata{}
+}
+func (m *mockActiveServer) SupportsResources() bool { return false }
+func (m *mockActiveServer) ListResources(context.Context) (*mcp.ListResourcesResult, error) {
+	return &mcp.ListResourcesResult{}, nil
 }
