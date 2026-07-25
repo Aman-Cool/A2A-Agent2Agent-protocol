@@ -15,6 +15,9 @@ const clientElicitationPrefix = "clientelicitation:"
 
 const userTokenFieldPrefix = "token:"
 
+// taskRecordPrefix namespaces A2A ownership records (agent-assigned id -> principal).
+const taskRecordPrefix = "taskowner:"
+
 // Cache implements a cache
 type Cache struct {
 	inmemory      *sync.Map
@@ -246,6 +249,78 @@ func (c *Cache) DeleteUserToken(ctx context.Context, sessionID, serverName strin
 		return nil
 	}
 	return c.extClient.HDel(ctx, sessionID, field).Err()
+}
+
+// taskRecordKey builds the ownership-record key. agent is a config-derived agent
+// name ("{namespace}/{registrationName}") that never contains ':', so it delimits
+// the key unambiguously even though id is agent-assigned and may contain any bytes:
+// no two distinct (agent, id) pairs can collide.
+func taskRecordKey(agent, id string) string {
+	return taskRecordPrefix + agent + ":" + id
+}
+
+// StoreTaskRecord records ownership of an agent-assigned id (a task or context id)
+// by principal, insert-only: the first writer wins and later writes never overwrite.
+// It returns the principal that owns the id after the call — the existing owner if
+// one was already recorded, otherwise principal — and whether this call created the
+// record. principal is an identity claim (the OAuth sub) kept for later ownership
+// comparison, not a credential, so it is stored as-is. ttl bounds the record in
+// Redis; in-memory mode ignores ttl, matching the other cache methods.
+func (c *Cache) StoreTaskRecord(ctx context.Context, agent, id, principal string, ttl time.Duration) (string, bool, error) {
+	key := taskRecordKey(agent, id)
+	if c.inmemory != nil {
+		actual, loaded := c.inmemory.LoadOrStore(key, principal)
+		return actual.(string), !loaded, nil
+	}
+	// SET key principal NX (with TTL): atomic insert-only write.
+	_, err := c.extClient.SetArgs(ctx, key, principal, redis.SetArgs{Mode: "NX", TTL: ttl}).Result()
+	if err == nil {
+		return principal, true, nil
+	}
+	if !errors.Is(err, redis.Nil) {
+		return "", false, err
+	}
+	// NX failed: the record already existed — report the current owner
+	owner, gerr := c.extClient.Get(ctx, key).Result()
+	if errors.Is(gerr, redis.Nil) {
+		// expired between the two calls: treat as no owner rather than reporting a stale one
+		return "", false, nil
+	}
+	if gerr != nil {
+		return "", false, gerr
+	}
+	return owner, false, nil
+}
+
+// LookupTaskRecord returns the principal that owns an agent-assigned id and whether
+// a record was found. Returns ("", false, nil) on miss.
+func (c *Cache) LookupTaskRecord(ctx context.Context, agent, id string) (string, bool, error) {
+	key := taskRecordKey(agent, id)
+	if c.inmemory != nil {
+		val, ok := c.inmemory.Load(key)
+		if !ok {
+			return "", false, nil
+		}
+		return val.(string), true, nil
+	}
+	owner, err := c.extClient.Get(ctx, key).Result()
+	if errors.Is(err, redis.Nil) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return owner, true, nil
+}
+
+// DeleteTaskRecord removes the ownership record for an agent-assigned id.
+func (c *Cache) DeleteTaskRecord(ctx context.Context, agent, id string) error {
+	key := taskRecordKey(agent, id)
+	if c.inmemory != nil {
+		c.inmemory.Delete(key)
+		return nil
+	}
+	return c.extClient.Del(ctx, key).Err()
 }
 
 // NewCache returns a new cache. Pass WithRedisClient to use an external redis
