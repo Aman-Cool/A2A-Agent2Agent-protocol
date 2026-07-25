@@ -159,8 +159,9 @@ func (s *ExtProcServer) Process(stream extProcV3.ExternalProcessor_ProcessServer
 		endOfStream         = false
 		mcpRequest          *routing.MCPRequest
 		ctx                 = stream.Context()
-		rewriter            *sseRewriter // nil until a tool call response arrives
-		a2a                 *a2aState    // non-nil for /a2a requests (spike)
+		rewriter            *sseRewriter    // nil until a tool call response arrives
+		a2a                 *a2aState       // non-nil for /a2a requests
+		a2aObs              *a2aSSEObserver // non-nil while observing a streamed a2a response
 	)
 	span := trace.SpanFromContext(ctx)
 	defer func() { span.End() }()
@@ -170,6 +171,9 @@ func (s *ExtProcServer) Process(stream extProcV3.ExternalProcessor_ProcessServer
 	defer func() {
 		if rewriter != nil {
 			_ = rewriter.Flush(ctx)
+		}
+		if a2aObs != nil {
+			a2aObs.Flush(ctx)
 		}
 	}()
 	for {
@@ -235,6 +239,7 @@ func (s *ExtProcServer) Process(stream extProcV3.ExternalProcessor_ProcessServer
 						s.Logger.DebugContext(ctx, "a2a: no agent registered for path", "request id", requestID, "path", requestPath)
 						resp = responseBuilder.WithImmediateJSONResponse(200, a2aErrorBody(nil, a2aErrInvalidParams, "no agent registered for the requested path")).Build()
 					} else {
+						a2a.agent = agent.Name
 						span.SetAttributes(
 							attribute.String("a2a.namespace", namespace),
 							attribute.String("a2a.prefix", prefix),
@@ -439,19 +444,27 @@ func (s *ExtProcServer) Process(stream extProcV3.ExternalProcessor_ProcessServer
 			statusCode := getSingleValueHeader(r.ResponseHeaders.Headers, ":status")
 			span.SetAttributes(attribute.String("http.status_code", statusCode))
 
-			// a2a: responses pass through unmodified — task ids are not
-			// rewritten, so no response body inspection is needed. no
-			// ModeOverride is set, leaving response_body_mode at its default
-			// (NONE): envoy streams the response straight to the client and no
-			// response-body phase reaches ext_proc.
+			// a2a: responses are never mutated — task ids pass through unchanged.
+			// non-streaming responses need no body phase, so no ModeOverride is set
+			// (response_body_mode stays at its default NONE and envoy streams the
+			// response straight to the client). streaming responses set a STREAMED
+			// ModeOverride so the body reaches ext_proc for read-only observation;
+			// the observer extracts task/context ids without altering the stream.
 			if a2a != nil {
 				responses := responseBuilder.WithDoNothingResponseHeaderResponse().Build()
+				if a2a.streaming && statusCode == "200" && len(responses) > 0 {
+					a2aObs = &a2aSSEObserver{logger: s.Logger, agent: a2a.agent, requestID: requestID}
+					responses[0].ModeOverride = a2aObserveMode()
+				}
 				for _, response := range responses {
 					if err := stream.Send(response); err != nil {
 						s.Logger.ErrorContext(ctx, "error sending response", "error", err)
 						recordError(span, err, 500)
 						return err
 					}
+				}
+				if a2aObs != nil {
+					continue // observe the streamed response body
 				}
 				return nil
 			}
@@ -500,6 +513,15 @@ func (s *ExtProcServer) Process(stream extProcV3.ExternalProcessor_ProcessServer
 		case *extProcV3.ProcessingRequest_ResponseBody:
 			body := r.ResponseBody.GetBody()
 			endOfStream := r.ResponseBody.GetEndOfStream()
+
+			// a2a: observe the streamed events read-only; the body is forwarded
+			// to the client unchanged below.
+			if a2aObs != nil {
+				a2aObs.Process(ctx, body)
+				if endOfStream {
+					a2aObs.Flush(ctx)
+				}
+			}
 
 			if rewriter != nil {
 				body = rewriter.Process(ctx, body)

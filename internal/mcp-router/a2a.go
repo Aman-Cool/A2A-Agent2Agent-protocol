@@ -40,6 +40,7 @@ const (
 // mcpRequest so the two protocols never share parsing state.
 type a2aState struct {
 	discovery bool   // GET card/catalog fetch: passed through to the broker
+	agent     string // resolved agent name (invocation only), for observation attribution
 	method    string // v1 JSON-RPC method (invocation only)
 	streaming bool
 }
