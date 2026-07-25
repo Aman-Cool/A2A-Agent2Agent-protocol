@@ -557,6 +557,10 @@ func (m *mockProcessServer) Send(actualResp *extProcV3.ProcessingResponse) error
 	case *extProcV3.ProcessingResponse_ResponseHeaders:
 		_, ok := actualResp.Response.(*extProcV3.ProcessingResponse_ResponseHeaders)
 		require.True(m.t, ok, "expected response type to be ResponseHeaders, but it was a %T", actualResp.Response)
+	case *extProcV3.ProcessingResponse_ResponseBody:
+		actualResponseBody, ok := actualResp.Response.(*extProcV3.ProcessingResponse_ResponseBody)
+		require.True(m.t, ok, "expected response type to be ResponseBody, but it was a %T", actualResp.Response)
+		requireMatchingBodyMutation(m.t, v.ResponseBody.Response, actualResponseBody.ResponseBody.Response)
 	case *extProcV3.ProcessingResponse_ImmediateResponse:
 		actualImmediateBody, ok := actualResp.Response.(*extProcV3.ProcessingResponse_ImmediateResponse)
 		require.True(m.t, ok, "expected response type to be ImmediateResponse, but it was a %T", actualResp.Response)
