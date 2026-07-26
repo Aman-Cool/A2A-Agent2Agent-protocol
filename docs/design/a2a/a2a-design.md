@@ -448,7 +448,7 @@ stateDiagram-v2
 | Config (`MCPServersConfig`) | Stores `A2AAgents []*A2AAgent` alongside `Servers`. `SetA2AAgents()`, `ListA2AAgents()` provide thread-safe access under the existing `sync.RWMutex`. `Notify()` delivers A2A agent list to observers. |
 | Config Secret (`SecretReaderWriter`) | `UpsertA2AAgent()` and `RemoveA2AAgent()` follow the existing read-modify-write pattern with `retry.RetryOnConflict()`. `BrokerConfig` YAML gains an `a2aAgents` key. |
 | Gateway HTTPRoute (`broker_router.go`) | `buildGatewayHTTPRoute()` gains two rules, both targeting the broker-router Service: an `a2a` rule (PathPrefix `/a2a`, with a `RequestHeaderModifier` filter removing `x-a2a-agent`, `x-a2a-task-id`, and `x-a2a-method` so clients cannot inject them) and an `api-catalog` rule (`/.well-known/api-catalog`). Discovery GETs and invocation POSTs share the `/a2a` rule: every A2A request traverses ext_proc (the filter is listener-scoped, so a separate discovery rule could not bypass it anyway), and the **router** disambiguates — GETs to the card path pass through untouched to the broker's HTTP mux, POST invocations get method routing. `httpRouteNeedsUpdate()` via `DeepEqual` ensures automatic updates on existing deployments. |
-| Task record store (`session.Cache`) | New `taskRecords sync.Map` field (immutable `TaskRecord` values, no COW), keyed by `(agent, taskID)`. `StoreTaskRecord()`, `LookupTaskRecord()`, `DeleteTaskRecord()` follow the in-memory/Redis duality; `StoreTaskRecord()` is **insert-only** (never overwrites an existing record's principal). The record holds the owning principal (and optional trace context) — **not** a routing target, since the path already resolves the agent. Redis key prefix: `a2atask:{agent}/{taskID}`. Records are **not** deleted on terminal states (tasks stay retrievable after completion — deleting at terminal would leave exactly the result-carrying task unprotected); cleanup is a **fixed retention TTL decoupled from the JWT/session** (the `idmap` pattern, `idmap/redis.go`), sized to at least the agents' task-retention window. A lookup miss **fails closed** (`-32001`), so production multi-replica deployments MUST use the Redis store; the in-memory store is single-replica dev-only. |
+| Task record store (`session.Cache`) | Ownership records keyed by `(agent, taskID)`, stored in the existing `inmemory` `sync.Map` under a `taskowner:` prefix (immutable principal-string values, no COW). `StoreTaskRecord()`, `LookupTaskRecord()`, `DeleteTaskRecord()` follow the in-memory/Redis duality; `StoreTaskRecord()` is **insert-only** (`LoadOrStore` / `SET NX`, never overwrites an existing record's principal) and returns the current owner plus whether it created the record. The value is the owning principal (extensible to carry trace context) — **not** a routing target, since the path already resolves the agent. Redis key: `taskowner:{agent}:{id}`. Records are **not** deleted on terminal states (tasks stay retrievable after completion — deleting at terminal would leave exactly the result-carrying task unprotected); cleanup is a **fixed retention TTL decoupled from the JWT/session** (the `idmap` pattern, `idmap/redis.go`), sized to at least the agents' task-retention window. A lookup miss **fails closed** (`-32001`), so production multi-replica deployments MUST use the Redis store; the in-memory store is single-replica dev-only. |
 
 ### API Changes
 
@@ -546,37 +546,37 @@ never client-suppliable.
 
 ### Data Storage
 
-#### TaskRecord store
+#### Task ownership record store
 
 New methods on `session.Cache`. The record is keyed by `(agent, taskID)` and holds who owns the
 task — **not** where to route it, since the `/a2a/{namespace}/{prefix}` path already resolves the agent
 and the agent-assigned task ID passes through unchanged:
 
 ```go
-type TaskRecord struct {
-    Principal string `json:"principal"`         // OAuth token `sub` that created this task; checked on every tasks/* call
-    TraceID   string `json:"traceID,omitempty"` // SendMessage span, for cross-request trace correlation
-    SpanID    string `json:"spanID,omitempty"`
-    CreatedAt int64  `json:"createdAt"`
-}
-
-// key = agent name + agent-assigned task ID
-StoreTaskRecord(ctx context.Context, agentName, taskID string, rec TaskRecord) error
-LookupTaskRecord(ctx context.Context, agentName, taskID string) (TaskRecord, bool, error)
-DeleteTaskRecord(ctx context.Context, agentName, taskID string) error
+// key = (agent name, agent-assigned task ID); value = the OAuth `sub` that created
+// the task, checked on every later tasks/* call. The value is the bare principal;
+// the record can later be extended to also carry the creating span's trace context
+// for the span-link enhancement (see Distributed tracing).
+StoreTaskRecord(ctx context.Context, agent, id, principal string, ttl time.Duration) (owner string, created bool, err error)
+LookupTaskRecord(ctx context.Context, agent, id string) (principal string, found bool, err error)
+DeleteTaskRecord(ctx context.Context, agent, id string) error
 ```
 
-In-memory: new `taskRecords sync.Map` field on `Cache`, separate from `inmemory` to avoid type
-collision. No COW needed — values are immutable `TaskRecord` structs. Insert-only means the write is
-`sync.Map.LoadOrStore` (**not** `Store`, which would overwrite): `LoadOrStore` returns the existing
-record if one is already bound, so `StoreTaskRecord` reports one of three outcomes — **new insert**,
-**same-owner idempotent** (a retried request from the owning principal), or **different-owner collision**
-(fail closed) — and the ownership binding is decided by the store, not by a check-then-write that could
-race. The Redis analog is `SET NX` (plus the TTL); a store error is a fourth outcome, **store
+In-memory: records live in the existing `inmemory` `sync.Map` under a `taskowner:` key prefix — the map
+already holds heterogeneous values keyed by prefix, so no separate field or type-collision workaround is
+needed, and every access is keyed (no `Range`), so there is no type-assertion hazard. The stored value is
+the immutable principal string — no COW needed. Insert-only means the write is `sync.Map.LoadOrStore`
+(**not** `Store`, which would overwrite): `LoadOrStore` returns the existing owner if one is already
+bound, so `StoreTaskRecord` returns the current owner and whether this call created the record. The
+caller compares the returned owner to the requesting principal to resolve the three outcomes — **new
+insert**, **same-owner idempotent** (a retried request from the owning principal), or **different-owner
+collision** (fail closed) — with the binding decided by the store's atomic write, not a check-then-write
+that could race. The Redis analog is `SET NX` (plus the TTL); a store error is a fourth outcome, **store
 unavailable**, which also fails closed — the task response or first task-creating stream event is **not
 released to the client until the binding has succeeded**, so a task can never be handed back unowned.
 
-Redis: key `a2atask:{agent}/{taskID}`, with a **fixed retention TTL decoupled from the session JWT**
+Redis: key `taskowner:{agent}:{id}`, written with `SET NX` and the retention TTL passed to
+`StoreTaskRecord` — a **fixed retention TTL decoupled from the session JWT**
 (the `idmap` pattern — `idmap/redis.go`; a TTL, not a session-derived expiry). A2A tasks can run for
 "seconds or days" and routinely outlive a 24h session, so a JWT-derived TTL would evict live records.
 Records are **not** deleted on terminal states: tasks remain retrievable after completion, so deleting
@@ -658,9 +658,11 @@ through unchanged; the record is an ownership check, not a rewrite. (An agent th
 context history bounds the impact, but the gateway cannot assume that, so it enforces context ownership
 regardless.)
 
-**Internal header stripping.** `x-a2a-agent` and `x-a2a-task-id` are stripped at both the
-HTTPRoute level (via `RequestHeaderModifier` filter in `buildGatewayHTTPRoute()`) and in
-`internalOnlyHeaders` in the router. A client cannot inject these headers to influence routing.
+**Internal header stripping.** `x-a2a-agent`, `x-a2a-task-id`, and `x-a2a-method` are stripped at both
+the HTTPRoute level (via `RequestHeaderModifier` filter in `buildGatewayHTTPRoute()`) and in
+`internalOnlyHeaders` in the router — every router-set header a policy may key on (agent for AuthPolicy,
+method for RateLimitPolicy) must be un-forgeable. A client cannot inject these headers to influence
+routing or policy decisions.
 
 **Agent card credential isolation.** `credentialRef` on `A2AAgentRegistration` is used exclusively
 by the controller to fetch Agent Cards for registration validation. It is never injected into
@@ -806,8 +808,8 @@ Two complementary layers fix this:
   it also stitches the gateway's spans to the agent's traces directly, if the agent emits OTel — no
   separate upstream-ID attribute is needed.
 - **Span links (the enhancement).** The `SendMessage` span's trace context (`traceID`/`spanID`) is stored
-  in the `TaskRecord` (extending the gateway↔backend correlation `idmap.Entry` already keeps via
-  `ServerName`/`SessionID`). Each later operation adds an OpenTelemetry **Span Link** back to the creating
+  on the task record — extending it beyond the bare principal, as the gateway↔backend correlation
+  `idmap.Entry` already keeps `ServerName`/`SessionID`. Each later operation adds an OpenTelemetry **Span Link** back to the creating
   span, which Jaeger/Tempo render as clickable cross-trace navigation — richer than tag search, but
   dependent on storing the context and on backend link rendering. The attribute is the must-have (works in
   any backend with tag search); links are additive.
