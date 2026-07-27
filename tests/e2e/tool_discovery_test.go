@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	mcpv1 "github.com/Kuadrant/mcp-gateway/api/v1"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
@@ -21,9 +22,8 @@ func isBrokerMetaTool(name string) bool {
 }
 
 const (
-	toolDiscExtName    = "tool-discovery-ext"
-	toolDiscNamespace  = "mcp-tool-discovery"
-	toolDiscPublicHost = "mcp.tool-discovery.127-0-0-1.sslip.io"
+	toolDiscExtName   = "tool-discovery-ext"
+	toolDiscNamespace = "mcp-tool-discovery"
 )
 
 var _ = Describe("Tool Discovery", Ordered, func() {
@@ -54,7 +54,7 @@ var _ = Describe("Tool Discovery", Ordered, func() {
 			InNamespace(toolDiscNamespace).
 			TargetingGateway(GatewayName, GatewayNamespace).
 			WithSectionName(ToolDiscoveryListenerName).
-			WithPublicHost(toolDiscPublicHost).
+			WithPublicHost(ToolDiscoveryPublicHost).
 			Build()
 		toolDiscExt.Clean(ctx).Register(ctx)
 
@@ -80,7 +80,7 @@ var _ = Describe("Tool Discovery", Ordered, func() {
 	newGatewayClient := func() {
 		Eventually(func(g Gomega) {
 			var err error
-			mcpGatewayClient, err = NewMCPGatewayClientWithNotifications(ctx, toolDiscURL, nil)
+			mcpGatewayClient, err = NewStatefulClientWithNotifications(ctx, toolDiscURL, nil)
 			g.Expect(err).NotTo(HaveOccurred())
 		}, TestTimeoutMedium, TestRetryInterval).Should(Succeed())
 	}
@@ -93,12 +93,11 @@ var _ = Describe("Tool Discovery", Ordered, func() {
 		for _, obj := range testResources {
 			CleanupResource(ctx, k8sClient, obj)
 		}
-		testResources = []client.Object{}
 	})
 
 	JustAfterEach(func() {
 		if CurrentSpecReport().Failed() {
-			GinkgoWriter.Println("failure detected in tool discovery test")
+			DumpClusterState(ctx, toolDiscNamespace, dualProtoNamespace, SystemNamespace, GatewayNamespace)
 		}
 	})
 
@@ -113,7 +112,7 @@ var _ = Describe("Tool Discovery", Ordered, func() {
 				InNamespace(toolDiscNamespace).
 				WithBackendTarget("mcp-test-server2", 9090).
 				WithBackendNamespace(TestServerNameSpace).
-				WithHostname("server.tool-discovery.127-0-0-1.sslip.io").
+				WithHostname(ToolDiscoveryServerHost).
 				WithPrefix("disc_meta_").
 				WithCategory("messaging").
 				WithHint("provides messaging tools").
@@ -132,9 +131,8 @@ var _ = Describe("Tool Discovery", Ordered, func() {
 			WaitForToolsWithPrefix(ctx, mcpGatewayClient, "disc_meta_")
 
 			By("calling discover_tools and verifying metadata")
-			sessionID := mcpGatewayClient.ID()
 			Eventually(func(g Gomega) {
-				_, resp, err := mcpCallDiscoverTools(ctx, toolDiscURL, sessionID, nil, nil)
+				_, resp, err := mcpCallDiscoverTools(ctx, toolDiscURL, mcpGatewayClient.ID(), nil, nil)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(resp).NotTo(BeNil())
 
@@ -163,7 +161,7 @@ var _ = Describe("Tool Discovery", Ordered, func() {
 				InNamespace(toolDiscNamespace).
 				WithBackendTarget("mcp-test-server2", 9090).
 				WithBackendNamespace(TestServerNameSpace).
-				WithHostname("server.tool-discovery.127-0-0-1.sslip.io").
+				WithHostname(ToolDiscoveryServerHost).
 				WithPrefix("multicat_").
 				WithCategory("Dining", "reservations").
 				WithSectionName(ToolDiscoveryListenerName).
@@ -176,7 +174,7 @@ var _ = Describe("Tool Discovery", Ordered, func() {
 				InNamespace(toolDiscNamespace).
 				WithBackendTarget("mcp-test-server1", 9090).
 				WithBackendNamespace(TestServerNameSpace).
-				WithHostname("server.tool-discovery.127-0-0-1.sslip.io").
+				WithHostname(ToolDiscoveryServerHost).
 				WithPrefix("catmsg_").
 				WithCategory("messaging").
 				WithSectionName(ToolDiscoveryListenerName).
@@ -194,9 +192,8 @@ var _ = Describe("Tool Discovery", Ordered, func() {
 			WaitForToolsWithPrefix(ctx, mcpGatewayClient, "multicat_")
 			WaitForToolsWithPrefix(ctx, mcpGatewayClient, "catmsg_")
 
-			sessionID := mcpGatewayClient.ID()
 			discoverByCategory := func(g Gomega, category string) (hasMulti, hasMsg bool) {
-				_, resp, err := mcpCallDiscoverTools(ctx, toolDiscURL, sessionID, map[string]any{"category": category}, nil)
+				_, resp, err := mcpCallDiscoverTools(ctx, toolDiscURL, mcpGatewayClient.ID(), map[string]any{"category": category}, nil)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(resp).NotTo(BeNil())
 				for _, s := range resp.Servers {
@@ -241,7 +238,7 @@ var _ = Describe("Tool Discovery", Ordered, func() {
 				InNamespace(toolDiscNamespace).
 				WithBackendTarget("mcp-test-server2", 9090).
 				WithBackendNamespace(TestServerNameSpace).
-				WithHostname("server.tool-discovery.127-0-0-1.sslip.io").
+				WithHostname(ToolDiscoveryServerHost).
 				WithPrefix("discauth_").
 				WithSectionName(ToolDiscoveryListenerName).
 				WithParentGateway(GatewayName, GatewayNamespace).
@@ -252,6 +249,9 @@ var _ = Describe("Tool Discovery", Ordered, func() {
 			Eventually(func(g Gomega) {
 				g.Expect(VerifyMCPServerRegistrationReady(ctx, k8sClient, server.Name, server.Namespace)).To(Succeed())
 			}, TestTimeoutLong, TestRetryInterval).Should(Succeed())
+
+			By("waiting for tools to appear via gateway")
+			WaitForToolsWithPrefix(ctx, mcpGatewayClient, "discauth_")
 
 			By("creating a JWT that allows only one tool")
 			allowedTools := map[string][]string{
@@ -270,7 +270,7 @@ var _ = Describe("Tool Discovery", Ordered, func() {
 			}, TestTimeoutMedium, TestRetryInterval).Should(Succeed())
 
 			Eventually(func(g Gomega) {
-				_, resp, err := mcpCallDiscoverTools(ctx, toolDiscURL, sessionID, nil, map[string]string{"X-Mcp-Authorized": jwtToken})
+				_, resp, err := mcpCallDiscoverTools(ctx, toolDiscURL, mcpGatewayClient.ID(), nil, map[string]string{"X-Mcp-Authorized": jwtToken})
 				g.Expect(err).NotTo(HaveOccurred())
 
 				var serverTools []string
@@ -292,7 +292,7 @@ var _ = Describe("Tool Discovery", Ordered, func() {
 				InNamespace(toolDiscNamespace).
 				WithBackendTarget("mcp-test-server2", 9090).
 				WithBackendNamespace(TestServerNameSpace).
-				WithHostname("server.tool-discovery.127-0-0-1.sslip.io").
+				WithHostname(ToolDiscoveryServerHost).
 				WithPrefix("discvs_").
 				WithParentGateway(GatewayName, GatewayNamespace).
 				WithSectionName(ToolDiscoveryListenerName).
@@ -319,7 +319,7 @@ var _ = Describe("Tool Discovery", Ordered, func() {
 
 			By("discover_tools should only return the virtual server's allowed tools")
 			Eventually(func(g Gomega) {
-				_, resp, err := mcpCallDiscoverTools(ctx, toolDiscURL, sessionID, nil, map[string]string{"X-Mcp-Virtualserver": vsHeader})
+				_, resp, err := mcpCallDiscoverTools(ctx, toolDiscURL, mcpGatewayClient.ID(), nil, map[string]string{"X-Mcp-Virtualserver": vsHeader})
 				g.Expect(err).NotTo(HaveOccurred())
 
 				var serverTools []string
@@ -344,7 +344,7 @@ var _ = Describe("Tool Discovery", Ordered, func() {
 				InNamespace(toolDiscNamespace).
 				WithBackendTarget("mcp-test-server2", 9090).
 				WithBackendNamespace(TestServerNameSpace).
-				WithHostname("server.tool-discovery.127-0-0-1.sslip.io").
+				WithHostname(ToolDiscoveryServerHost).
 				WithPrefix("selscope_").
 				WithSectionName(ToolDiscoveryListenerName).
 				WithParentGateway(GatewayName, GatewayNamespace).
@@ -452,7 +452,7 @@ var _ = Describe("Tool Discovery", Ordered, func() {
 				InNamespace(toolDiscNamespace).
 				WithBackendTarget("mcp-test-server2", 9090).
 				WithBackendNamespace(TestServerNameSpace).
-				WithHostname("server.tool-discovery.127-0-0-1.sslip.io").
+				WithHostname(ToolDiscoveryServerHost).
 				WithPrefix("selpart_").
 				WithSectionName(ToolDiscoveryListenerName).
 				WithParentGateway(GatewayName, GatewayNamespace).
@@ -499,7 +499,7 @@ var _ = Describe("Tool Discovery", Ordered, func() {
 				InNamespace(toolDiscNamespace).
 				WithBackendTarget("mcp-test-server2", 9090).
 				WithBackendNamespace(TestServerNameSpace).
-				WithHostname("server.tool-discovery.127-0-0-1.sslip.io").
+				WithHostname(ToolDiscoveryServerHost).
 				WithPrefix("notifsel_").
 				WithSectionName(ToolDiscoveryListenerName).
 				WithParentGateway(GatewayName, GatewayNamespace).
@@ -512,7 +512,7 @@ var _ = Describe("Tool Discovery", Ordered, func() {
 			}, TestTimeoutLong, TestRetryInterval).Should(Succeed())
 
 			notifCh := make(chan struct{}, 1)
-			client, err := NewMCPGatewayClientWithNotifications(ctx, toolDiscURL, func(method string) {
+			client, err := NewStatefulClientWithNotifications(ctx, toolDiscURL, func(method string) {
 				if method == "notifications/tools/list_changed" {
 					select {
 					case notifCh <- struct{}{}:
@@ -525,10 +525,13 @@ var _ = Describe("Tool Discovery", Ordered, func() {
 
 			WaitForToolsWithPrefix(ctx, client, "notifsel_")
 
-			sessionID := client.ID()
-			status, _, selectErr := mcpCallSelectTools(ctx, toolDiscURL, sessionID, []string{"notifsel_hello_world"}, nil)
+			// use the SDK client (not raw HTTP) so inline POST notifications reach the handler
+			res, selectErr := client.CallTool(ctx, &mcp.CallToolParams{
+				Name:      "select_tools",
+				Arguments: map[string]any{"tools": []any{"notifsel_hello_world"}},
+			})
 			Expect(selectErr).NotTo(HaveOccurred())
-			Expect(status).To(Equal(200))
+			Expect(res.IsError).To(BeFalse(), "select_tools failed: %v", res.Content)
 
 			By("verifying notification was received")
 			Eventually(notifCh, TestTimeoutShort, TestRetryInterval).Should(Receive(),
@@ -589,7 +592,7 @@ var _ = Describe("Tool Discovery", Ordered, func() {
 				InNamespace(toolDiscNamespace).
 				WithBackendTarget("mcp-test-server2", 9090).
 				WithBackendNamespace(TestServerNameSpace).
-				WithHostname("server.tool-discovery.127-0-0-1.sslip.io").
+				WithHostname(ToolDiscoveryServerHost).
 				WithPrefix("thzero_").
 				WithSectionName(ToolDiscoveryListenerName).
 				WithParentGateway(GatewayName, GatewayNamespace).
@@ -632,7 +635,7 @@ var _ = Describe("Tool Discovery", Ordered, func() {
 				InNamespace(toolDiscNamespace).
 				WithBackendTarget("mcp-test-server2", 9090).
 				WithBackendNamespace(TestServerNameSpace).
-				WithHostname("server.tool-discovery.127-0-0-1.sslip.io").
+				WithHostname(ToolDiscoveryServerHost).
 				WithPrefix("thtest_").
 				WithSectionName(ToolDiscoveryListenerName).
 				WithParentGateway(GatewayName, GatewayNamespace).
@@ -702,7 +705,7 @@ var _ = Describe("Tool Discovery", Ordered, func() {
 				InNamespace(toolDiscNamespace).
 				WithBackendTarget("mcp-test-server2", 9090).
 				WithBackendNamespace(TestServerNameSpace).
-				WithHostname("server.tool-discovery.127-0-0-1.sslip.io").
+				WithHostname(ToolDiscoveryServerHost).
 				WithPrefix("iso_").
 				WithSectionName(ToolDiscoveryListenerName).
 				WithParentGateway(GatewayName, GatewayNamespace).
@@ -762,7 +765,7 @@ var _ = Describe("Tool Discovery", Ordered, func() {
 				InNamespace(toolDiscNamespace).
 				WithBackendTarget("mcp-test-server2", 9090).
 				WithBackendNamespace(TestServerNameSpace).
-				WithHostname("server.tool-discovery.127-0-0-1.sslip.io").
+				WithHostname(ToolDiscoveryServerHost).
 				WithPrefix("conc_").
 				WithSectionName(ToolDiscoveryListenerName).
 				WithParentGateway(GatewayName, GatewayNamespace).
@@ -843,7 +846,7 @@ var _ = Describe("Tool Discovery", Ordered, func() {
 				InNamespace(toolDiscNamespace).
 				WithBackendTarget("mcp-test-server2", 9090).
 				WithBackendNamespace(TestServerNameSpace).
-				WithHostname("server.tool-discovery.127-0-0-1.sslip.io").
+				WithHostname(ToolDiscoveryServerHost).
 				WithPrefix("reconf_").
 				WithCategory("initial-category").
 				WithHint("initial hint").
@@ -859,11 +862,9 @@ var _ = Describe("Tool Discovery", Ordered, func() {
 
 			WaitForToolsWithPrefix(ctx, mcpGatewayClient, "reconf_")
 
-			sessionID := mcpGatewayClient.ID()
-
 			By("verifying initial category and hint via discover_tools")
 			Eventually(func(g Gomega) {
-				_, resp, err := mcpCallDiscoverTools(ctx, toolDiscURL, sessionID, map[string]any{"category": "initial-category"}, nil)
+				_, resp, err := mcpCallDiscoverTools(ctx, toolDiscURL, mcpGatewayClient.ID(), map[string]any{"category": "initial-category"}, nil)
 				g.Expect(err).NotTo(HaveOccurred())
 				hasTools := false
 				for _, s := range resp.Servers {
@@ -891,7 +892,7 @@ var _ = Describe("Tool Discovery", Ordered, func() {
 
 			By("waiting for reconciliation to propagate the updated metadata")
 			Eventually(func(g Gomega) {
-				_, resp, err := mcpCallDiscoverTools(ctx, toolDiscURL, sessionID, map[string]any{"category": "updated-category"}, nil)
+				_, resp, err := mcpCallDiscoverTools(ctx, toolDiscURL, mcpGatewayClient.ID(), map[string]any{"category": "updated-category"}, nil)
 				g.Expect(err).NotTo(HaveOccurred())
 				hasTools := false
 				for _, s := range resp.Servers {
@@ -907,7 +908,7 @@ var _ = Describe("Tool Discovery", Ordered, func() {
 
 			By("verifying old category no longer matches")
 			Eventually(func(g Gomega) {
-				_, resp, err := mcpCallDiscoverTools(ctx, toolDiscURL, sessionID, map[string]any{"category": "initial-category"}, nil)
+				_, resp, err := mcpCallDiscoverTools(ctx, toolDiscURL, mcpGatewayClient.ID(), map[string]any{"category": "initial-category"}, nil)
 				g.Expect(err).NotTo(HaveOccurred())
 				for _, s := range resp.Servers {
 					for _, t := range s.Tools {

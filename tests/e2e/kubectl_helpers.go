@@ -3,12 +3,17 @@
 package e2e
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"os"
 	"os/exec"
 	"strings"
+	"time"
 
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -199,28 +204,55 @@ func PatchBrokerCA(ctx context.Context, k8sClient client.Client, namespace strin
 		}
 	}
 
-	caSecret := &corev1.Secret{}
-	Expect(k8sClient.Get(ctx, client.ObjectKey{Name: "private-ca-keypair", Namespace: "cert-manager"}, caSecret)).To(Succeed())
-	caCertPEM, ok := caSecret.Data["ca.crt"]
-	Expect(ok).To(BeTrue(), "private-ca-keypair should have ca.crt")
+	if e2eDomain == defaultE2EDomain {
+		// KIND: use cert-manager private CA
+		caSecret := &corev1.Secret{}
+		Expect(k8sClient.Get(ctx, client.ObjectKey{Name: "private-ca-keypair", Namespace: "cert-manager"}, caSecret)).To(Succeed())
+		caCertPEM, ok := caSecret.Data["ca.crt"]
+		Expect(ok).To(BeTrue(), "private-ca-keypair should have ca.crt")
 
-	caBundle := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "gateway-ca-bundle",
-			Namespace: namespace,
-		},
-		Type: corev1.SecretTypeOpaque,
-		Data: map[string][]byte{"ca.crt": caCertPEM},
+		caBundle := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "gateway-ca-bundle",
+				Namespace: namespace,
+			},
+			Type: corev1.SecretTypeOpaque,
+			Data: map[string][]byte{"ca.crt": caCertPEM},
+		}
+		_ = k8sClient.Delete(ctx, caBundle)
+		Expect(k8sClient.Create(ctx, caBundle)).To(Succeed())
+
+		combinedPatch := `[` +
+			`{"op":"add","path":"/spec/template/spec/volumes/-","value":{"name":"gateway-ca","secret":{"secretName":"gateway-ca-bundle"}}},` +
+			`{"op":"add","path":"/spec/template/spec/containers/0/volumeMounts/-","value":{"name":"gateway-ca","mountPath":"/certs/gateway-ca.crt","subPath":"ca.crt","readOnly":true}},` +
+			`{"op":"add","path":"/spec/template/spec/containers/0/command/-","value":"--gateway-ca-cert=/certs/gateway-ca.crt"}` +
+			`]`
+		Expect(PatchDeploymentJSON(ctx, namespace, "mcp-gateway", combinedPatch)).To(Succeed())
+	} else {
+		// OpenShift/real clusters: copy GATEWAY_CA_BUNDLE_CONFIGMAP (defaults to trusted-ca-bundle) ConfigMap from mcp-system
+		if namespace != SystemNamespace {
+			sourceConfigMap := &corev1.ConfigMap{}
+			Expect(k8sClient.Get(ctx, client.ObjectKey{Name: GatewayCABundleConfigMap, Namespace: SystemNamespace}, sourceConfigMap)).To(Succeed())
+
+			targetConfigMap := &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      GatewayCABundleConfigMap,
+					Namespace: namespace,
+					Labels:    sourceConfigMap.Labels,
+				},
+				Data: sourceConfigMap.Data,
+			}
+			_ = k8sClient.Delete(ctx, targetConfigMap)
+			Expect(k8sClient.Create(ctx, targetConfigMap)).To(Succeed())
+		}
+
+		combinedPatch := `[` +
+			`{"op":"add","path":"/spec/template/spec/volumes/-","value":{"name":"gateway-ca","configMap":{"name":"` + GatewayCABundleConfigMap + `"}}},` +
+			`{"op":"add","path":"/spec/template/spec/containers/0/volumeMounts/-","value":{"name":"gateway-ca","mountPath":"/certs/gateway-ca.crt","subPath":"ca-bundle.crt","readOnly":true}},` +
+			`{"op":"add","path":"/spec/template/spec/containers/0/command/-","value":"--gateway-ca-cert=/certs/gateway-ca.crt"}` +
+			`]`
+		Expect(PatchDeploymentJSON(ctx, namespace, "mcp-gateway", combinedPatch)).To(Succeed())
 	}
-	_ = k8sClient.Delete(ctx, caBundle)
-	Expect(k8sClient.Create(ctx, caBundle)).To(Succeed())
-
-	combinedPatch := `[` +
-		`{"op":"add","path":"/spec/template/spec/volumes/-","value":{"name":"gateway-ca","secret":{"secretName":"gateway-ca-bundle"}}},` +
-		`{"op":"add","path":"/spec/template/spec/containers/0/volumeMounts/-","value":{"name":"gateway-ca","mountPath":"/certs/gateway-ca.crt","subPath":"ca.crt","readOnly":true}},` +
-		`{"op":"add","path":"/spec/template/spec/containers/0/command/-","value":"--gateway-ca-cert=/certs/gateway-ca.crt"}` +
-		`]`
-	Expect(PatchDeploymentJSON(ctx, namespace, "mcp-gateway", combinedPatch)).To(Succeed())
 	Expect(WaitForDeploymentReady(ctx, namespace, "mcp-gateway")).To(Succeed())
 }
 
@@ -363,4 +395,73 @@ func IsAuthPolicyConfigured(ctx context.Context) bool {
 		return false
 	}
 	return strings.TrimSpace(string(output)) != ""
+}
+
+// DumpClusterState dumps gateway-related resources for post-failure debugging.
+// Writes to a temp file and prints the path; falls back to GinkgoWriter on file errors.
+func DumpClusterState(ctx context.Context, namespaces ...string) {
+	resources := []string{
+		"gateways.gateway.networking.k8s.io",
+		"httproutes.gateway.networking.k8s.io",
+		"mcpgatewayextensions.mcp.kuadrant.io",
+		"mcpserverregistrations.mcp.kuadrant.io",
+		"envoyfilters.networking.istio.io",
+	}
+
+	f, err := os.CreateTemp("", "e2e-cluster-dump-*.txt")
+	if err != nil {
+		GinkgoWriter.Printf("failed to create dump file, falling back to stdout: %v\n", err)
+		dumpClusterStateTo(ctx, GinkgoWriter, resources, namespaces)
+		return
+	}
+	defer func() { _ = f.Close() }()
+
+	w := bufio.NewWriter(f)
+	dumpClusterStateTo(ctx, w, resources, namespaces)
+	_ = w.Flush()
+
+	GinkgoWriter.Printf("cluster state dumped to: %s\n", f.Name())
+}
+
+func dumpClusterStateTo(ctx context.Context, w io.Writer, resources, namespaces []string) {
+	p := func(format string, args ...any) { _, _ = fmt.Fprintf(w, format, args...) }
+
+	p("=== CLUSTER STATE DUMP (post-failure) ===\n")
+	p("test: %s\n", CurrentSpecReport().FullText())
+	p("time: %s\n\n", time.Now().UTC().Format(time.RFC3339))
+
+	for _, res := range resources {
+		cmd := exec.CommandContext(ctx, "kubectl", "get", res, "--all-namespaces", "-o", "wide")
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			p("  [%s] error: %v\n", res, err)
+			continue
+		}
+		p("\n--- %s ---\n%s", res, string(output))
+	}
+
+	for _, ns := range namespaces {
+		p("\n--- config secret in %s (metadata only) ---\n", ns)
+		cmd := exec.CommandContext(ctx, "kubectl", "get", "secret", "mcp-gateway-config",
+			"-n", ns, "-o", "jsonpath={.metadata.name}{\"\\t\"}{.metadata.namespace}{\"\\t\"}{.metadata.creationTimestamp}{\"\\t\"}{.metadata.resourceVersion}{\"\\n\"}")
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			p("  error: %v\n", err)
+		} else {
+			p("  name\tnamespace\tcreated\tresourceVersion\n")
+			p("  %s\n", string(output))
+		}
+
+		p("\n--- pods in %s ---\n", ns)
+		cmd = exec.CommandContext(ctx, "kubectl", "get", "pods", "-n", ns, "-o", "wide")
+		output, _ = cmd.CombinedOutput()
+		p("%s\n", string(output))
+
+		p("\n--- deployments in %s ---\n", ns)
+		cmd = exec.CommandContext(ctx, "kubectl", "get", "deployments", "-n", ns, "-o", "wide")
+		output, _ = cmd.CombinedOutput()
+		p("%s\n", string(output))
+	}
+
+	p("=== END CLUSTER STATE DUMP ===\n")
 }

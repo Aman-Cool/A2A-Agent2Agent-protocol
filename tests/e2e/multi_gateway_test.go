@@ -29,7 +29,7 @@ var _ = Describe("MCP Gateway Multi-Gateway", func() {
 
 	JustAfterEach(func() {
 		if CurrentSpecReport().Failed() {
-			GinkgoWriter.Println("failure detected")
+			DumpClusterState(ctx, SystemNamespace, GatewayNamespace)
 		}
 	})
 
@@ -197,7 +197,7 @@ var _ = Describe("MCP Gateway Multi-Gateway", func() {
 			clientErr  error
 		)
 		Eventually(func(_ Gomega) {
-			e2e1Client, clientErr = NewMCPGatewayClientWithNotifications(ctx, E2E1GatewayURL, func(_ string) {})
+			e2e1Client, clientErr = NewStatefulClientWithNotifications(ctx, E2E1GatewayURL, func(_ string) {})
 			Expect(clientErr).Error().NotTo(HaveOccurred())
 		}, TestTimeoutMedium, TestRetryInterval).To(Succeed())
 
@@ -237,13 +237,14 @@ var _ = Describe("MCP Gateway Multi-Gateway", func() {
 			WithSectionName(E2E1ListenerName).
 			WithPublicHost(E2E1PublicHost).
 			Build()
-		newSetup.Register(ctx)
+		// clean first: reuses the same name/namespace, so old resources (finalizers) must be fully gone
+		newSetup.Clean(ctx).Register(ctx)
 
 		By("Verifying MCPGatewayExtension becomes ready again")
 		Eventually(func(g Gomega) {
 			err := VerifyMCPGatewayExtensionReady(ctx, k8sClient, e2e1ExtName, e2e1ExtNamespace)
 			g.Expect(err).NotTo(HaveOccurred())
-		}, TestTimeoutMedium, TestRetryInterval).To(Succeed())
+		}, TestTimeoutLong, TestRetryInterval).To(Succeed())
 
 		By("Verifying the broker/router deployment is recreated and ready")
 		Eventually(func(g Gomega) {
@@ -255,7 +256,7 @@ var _ = Describe("MCP Gateway Multi-Gateway", func() {
 
 		By("Re-establishing MCP client connection")
 		Eventually(func(g Gomega) {
-			e2e1Client, clientErr = NewMCPGatewayClientWithNotifications(ctx, E2E1GatewayURL, func(_ string) {})
+			e2e1Client, clientErr = NewStatefulClientWithNotifications(ctx, E2E1GatewayURL, func(_ string) {})
 			g.Expect(clientErr).NotTo(HaveOccurred())
 		}, TestTimeoutMedium, TestRetryInterval).To(Succeed())
 		defer func() { _ = e2e1Client.Close() }()
@@ -343,7 +344,7 @@ var _ = Describe("MCP Gateway Multi-Gateway", func() {
 		var mainGatewayClient *NotifyingMCPClient
 		Eventually(func(g Gomega) {
 			var clientErr error
-			mainGatewayClient, clientErr = NewMCPGatewayClientWithNotifications(ctx, gatewayURL, func(_ string) {})
+			mainGatewayClient, clientErr = NewStatefulClientWithNotifications(ctx, gatewayURL, func(_ string) {})
 			g.Expect(clientErr).NotTo(HaveOccurred())
 		}, TestTimeoutMedium, TestRetryInterval).To(Succeed())
 		defer func() { _ = mainGatewayClient.Close() }()
@@ -352,7 +353,7 @@ var _ = Describe("MCP Gateway Multi-Gateway", func() {
 		var e2e1Client *NotifyingMCPClient
 		Eventually(func(g Gomega) {
 			var clientErr error
-			e2e1Client, clientErr = NewMCPGatewayClientWithNotifications(ctx, E2E1GatewayURL, func(_ string) {})
+			e2e1Client, clientErr = NewStatefulClientWithNotifications(ctx, E2E1GatewayURL, func(_ string) {})
 			g.Expect(clientErr).NotTo(HaveOccurred())
 		}, TestTimeoutMedium, TestRetryInterval).To(Succeed())
 		defer func() { _ = e2e1Client.Close() }()
@@ -420,7 +421,7 @@ var _ = Describe("MCP Gateway Multi-Gateway", func() {
 		}, TestTimeoutMedium, TestRetryInterval).To(Succeed())
 	})
 
-	It("[multi-gateway] Shared Gateway with team isolation via sectionName", func() {
+	It("[multi-gateway] Shared Gateway with team isolation via sectionName", Serial, func() {
 		// This test verifies that a single Gateway with multiple listeners can be used
 		// by different teams, each with their own MCPGatewayExtension targeting their
 		// specific listener. Each team should only see tools from their own registrations.
@@ -453,7 +454,6 @@ var _ = Describe("MCP Gateway Multi-Gateway", func() {
 			TargetingGateway(SharedGatewayName, GatewayNamespace).
 			WithSectionName(TeamBMCPListenerName).
 			WithPublicHost(TeamBPublicHost).
-			WithListenerPort(8081).
 			Build()
 		teamBSetup.Clean(ctx).Register(ctx)
 		defer teamBSetup.TearDown(ctx)
@@ -535,7 +535,7 @@ var _ = Describe("MCP Gateway Multi-Gateway", func() {
 		var teamAClient *NotifyingMCPClient
 		Eventually(func(g Gomega) {
 			var clientErr error
-			teamAClient, clientErr = NewMCPGatewayClientWithNotifications(ctx, TeamAGatewayURL, func(_ string) {})
+			teamAClient, clientErr = NewStatefulClientWithNotifications(ctx, TeamAGatewayURL, func(_ string) {})
 			g.Expect(clientErr).NotTo(HaveOccurred())
 		}, TestTimeoutMedium, TestRetryInterval).To(Succeed())
 		defer func() { _ = teamAClient.Close() }()
@@ -544,7 +544,7 @@ var _ = Describe("MCP Gateway Multi-Gateway", func() {
 		var teamBClient *NotifyingMCPClient
 		Eventually(func(g Gomega) {
 			var clientErr error
-			teamBClient, clientErr = NewMCPGatewayClientWithNotifications(ctx, TeamBGatewayURL, func(_ string) {})
+			teamBClient, clientErr = NewStatefulClientWithNotifications(ctx, TeamBGatewayURL, func(_ string) {})
 			g.Expect(clientErr).NotTo(HaveOccurred())
 		}, TestTimeoutMedium, TestRetryInterval).To(Succeed())
 		defer func() { _ = teamBClient.Close() }()
@@ -619,7 +619,8 @@ var _ = Describe("MCP Gateway Multi-Gateway", func() {
 			WithTarget(SharedGatewayName, GatewayNamespace).
 			WithSectionName(TeamAMCPListenerName). // targeting Team A's listener
 			Build()
-		testResources = append(testResources, conflictExt)
+		// clean up before teamBSetup.TearDown deletes the namespace (LIFO ordering)
+		defer CleanupResource(ctx, k8sClient, conflictExt)
 		Expect(k8sClient.Create(ctx, conflictExt)).To(Succeed())
 
 		Eventually(func(g Gomega) {
@@ -715,7 +716,7 @@ var _ = Describe("MCP Gateway Multi-Gateway", func() {
 		Expect(v.HTTPRouteNotFound(routeName, extNamespace)).To(Succeed())
 	})
 
-	It("[multi-gateway] Each MCPGatewayExtension gets its own HTTPRoute", func() {
+	It("[multi-gateway] Each MCPGatewayExtension gets its own HTTPRoute", Serial, func() {
 		const (
 			teamAExtName = "httproute-team-a"
 			teamBExtName = "httproute-team-b"
@@ -744,7 +745,6 @@ var _ = Describe("MCP Gateway Multi-Gateway", func() {
 			TargetingGateway(SharedGatewayName, GatewayNamespace).
 			WithSectionName(TeamBMCPListenerName).
 			WithPublicHost(TeamBPublicHost).
-			WithListenerPort(8081).
 			Build()
 		teamBSetup.Clean(ctx).Register(ctx)
 		defer teamBSetup.TearDown(ctx)
