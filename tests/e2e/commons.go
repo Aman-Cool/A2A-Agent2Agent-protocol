@@ -16,7 +16,7 @@ import (
 
 // Test timeouts and intervals
 const (
-	TestTimeoutMedium     = time.Second * 90
+	TestTimeoutMedium     = time.Second * 120
 	TestTimeoutShort      = time.Second * 45
 	TestTimeoutLong       = time.Minute * 5
 	TestTimeoutConfigSync = time.Minute * 6
@@ -63,6 +63,11 @@ const (
 // tool-discovery listener on the shared mcp-gateway (isolated tool discovery tests)
 const (
 	ToolDiscoveryListenerName = "tool-discovery"
+)
+
+// protocol-2026 listener on the shared mcp-gateway (isolated protocol 2026-07-28 tests)
+const (
+	Protocol2026ListenerName = "protocol-2026"
 )
 
 const defaultE2EDomain = "127-0-0-1.sslip.io"
@@ -134,6 +139,13 @@ func toolDiscServerHostDefault() string {
 	return "server.tool-discovery." + e2eDomain
 }
 
+func protocol2026PublicHostDefault() string {
+	if e2eDomain == defaultE2EDomain {
+		return "mcp.protocol-2026.127-0-0-1.sslip.io"
+	}
+	return "mcp.protocol-2026." + e2eDomain
+}
+
 // public hosts - derived from E2E_DOMAIN
 var (
 	gatewayPublicHost        = goenv.GetDefault("GATEWAY_PUBLIC_HOST", gatewayPublicHostDefault())
@@ -144,6 +156,7 @@ var (
 	URLElicitationPublicHost = goenv.GetDefault("URL_ELICITATION_PUBLIC_HOST", urlElicitationPublicHostDefault())
 	ToolDiscoveryPublicHost  = goenv.GetDefault("TOOL_DISCOVERY_PUBLIC_HOST", toolDiscPublicHostDefault())
 	ToolDiscoveryServerHost  = goenv.GetDefault("TOOL_DISCOVERY_SERVER_HOST", toolDiscServerHostDefault())
+	Protocol2026PublicHost   = goenv.GetDefault("PROTOCOL_2026_PUBLIC_HOST", protocol2026PublicHostDefault())
 )
 
 // gateway URLs - on Kind use localhost port mappings, on real clusters derive from public hosts
@@ -155,6 +168,7 @@ var (
 	ElicitationGatewayURL    = goenv.GetDefault("ELICITATION_GATEWAY_URL", gatewayURLDefault(ElicitationPublicHost, "https://elicit.mcp-gateway.local:8010/mcp"))
 	URLElicitationGatewayURL = goenv.GetDefault("URL_ELICITATION_GATEWAY_URL", gatewayURLDefault(URLElicitationPublicHost, "https://url-elicit.mcp-gateway.local:8010/mcp"))
 	ToolDiscoveryGatewayURL  = goenv.GetDefault("TOOL_DISCOVERY_GATEWAY_URL", gatewayURLDefault(ToolDiscoveryPublicHost, "http://mcp.tool-discovery.127-0-0-1.sslip.io:8001/mcp"))
+	Protocol2026GatewayURL   = goenv.GetDefault("PROTOCOL_2026_GATEWAY_URL", gatewayURLDefault(Protocol2026PublicHost, "http://mcp.protocol-2026.127-0-0-1.sslip.io:8011/mcp"))
 )
 
 // gatewayURLDefault returns the Kind-specific localhost URL when using the default domain,
