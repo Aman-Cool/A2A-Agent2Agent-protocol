@@ -93,6 +93,55 @@ func testCACertPEM(t *testing.T) []byte {
 	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
 }
 
+// leafCertPEM builds a cert like a server's own TLS cert: BasicConstraints is
+// present and explicitly says IsCA=false. This is what someone gets by mistakenly
+// pasting a leaf cert into ca.crt instead of the issuing CA.
+func leafCertPEM(t *testing.T) []byte {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	template := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "my-service.example.com"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(time.Hour),
+		KeyUsage:              x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true,
+		IsCA:                  false,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+}
+
+// legacyRootCertPEM builds a cert like an old-style self-signed root CA that never
+// set the BasicConstraints extension at all. These must keep validating successfully.
+func legacyRootCertPEM(t *testing.T) []byte {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	template := &x509.Certificate{
+		SerialNumber:          big.NewInt(2),
+		Subject:               pkix.Name{CommonName: "Legacy Root CA"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(time.Hour),
+		KeyUsage:              x509.KeyUsageCertSign,
+		BasicConstraintsValid: false,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+}
+
 func TestValidateCACertPEM(t *testing.T) {
 	validPEM := testCACertPEM(t)
 
@@ -128,6 +177,20 @@ func TestValidateCACertPEM(t *testing.T) {
 			name:    "corrupt certificate DER",
 			data:    pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: []byte("not-valid-der")}),
 			wantErr: "failed to parse certificate",
+		},
+		{
+			name:    "leaf certificate explicitly not a CA",
+			data:    leafCertPEM(t),
+			wantErr: "not a CA certificate",
+		},
+		{
+			name: "legacy root CA without BasicConstraints must still be accepted",
+			data: legacyRootCertPEM(t),
+		},
+		{
+			name:    "chain with valid CA followed by a leaf cert",
+			data:    append(testCACertPEM(t), leafCertPEM(t)...),
+			wantErr: "not a CA certificate",
 		},
 	}
 

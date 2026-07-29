@@ -762,7 +762,10 @@ func (r *MCPReconciler) findMCPServerRegistrationsForHTTPRoute(ctx context.Conte
 	return requests
 }
 
-// validateCACertPEM checks that the data contains at least one valid PEM-encoded certificate.
+// validateCACertPEM checks that the data contains at least one valid PEM-encoded
+// CA certificate. Certificates that explicitly declare BasicConstraints CA:FALSE
+// are rejected; certificates that omit BasicConstraints entirely are accepted,
+// since older root CAs and dev certs often don't set it.
 func validateCACertPEM(data []byte) error {
 	rest := data
 	found := false
@@ -775,8 +778,12 @@ func validateCACertPEM(data []byte) error {
 		if block.Type != "CERTIFICATE" {
 			return fmt.Errorf("unexpected PEM block type %q, expected CERTIFICATE", block.Type)
 		}
-		if _, err := x509.ParseCertificate(block.Bytes); err != nil {
+		cert, err := x509.ParseCertificate(block.Bytes)
+		if err != nil {
 			return fmt.Errorf("failed to parse certificate: %w", err)
+		}
+		if cert.BasicConstraintsValid && !cert.IsCA {
+			return fmt.Errorf("certificate for %q is not a CA certificate", cert.Subject.CommonName)
 		}
 		found = true
 	}
