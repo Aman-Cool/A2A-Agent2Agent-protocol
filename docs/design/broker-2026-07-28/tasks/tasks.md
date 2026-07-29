@@ -45,17 +45,17 @@ Task 8 (Documentation)
 
 Tasks 1-3 are plumbing with no new behavior — existing tests validate correctness throughout. Task 4 adds new aggregation and fetch logic. Task 5 wires it. Task 6 replaces the notification mechanism for 2026. Tasks 7-8 are test and doc artifacts.
 
-## Task 1: SDK bump to v1.7.0
+## Task 1: SDK bump to v1.7.0 ✅
 
 **Files:** `go.mod`, `go.sum`
 
 Bump `github.com/modelcontextprotocol/go-sdk` from `v1.7.0-pre.3` to `v1.7.0` stable. This provides `CacheableResult` types with `TTLMs` and `CacheScope` fields, `SubscriptionsListenParams`, and stable `server/discover`.
 
 **Acceptance criteria:**
-- [ ] `go.mod` references `v1.7.0`
-- [ ] `CacheableResult` type accessible from the SDK
-- [ ] `make lint` passes
-- [ ] `make test-unit` passes
+- [x] `go.mod` references `v1.7.0`
+- [x] `CacheableResult` type accessible from the SDK
+- [x] `make lint` passes (pre-existing issues only)
+- [x] `make test-unit` passes
 
 **Verification:** `make lint && make test-unit`
 
