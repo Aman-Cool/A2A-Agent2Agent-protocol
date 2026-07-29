@@ -434,6 +434,31 @@ When the `A2AAgentRegistration` is deleted, the agent's gateway path is removed 
 ### [Happy,A2A] MCP tool discovery is unaffected while an A2A agent is registered
 
 While an A2A agent is registered and cataloged, MCP `tools/list` through the same gateway still succeeds — A2A support is additive and does not disturb MCP traffic.
+
+## A2A invocation
+
+These register the a2a-test-server as an agent and drive JSON-RPC invocation through the gateway to it. The router resolves the agent from the `/a2a/{ns}/{prefix}` path and rewrites `:authority` to the agent. See `a2a_invocation_test.go`.
+
+### [Happy,A2A] SendMessage is routed to the agent and returns a completed task
+
+When a client POSTs a `SendMessage` to a registered agent's gateway path, the router resolves the agent from the path and forwards the request; the response is the v1 `SendMessageResponse` oneof carrying a task in `TASK_STATE_COMPLETED`, and the task id is the agent's own (`a2a-task-*` prefix), passed through unchanged rather than gateway-minted.
+
+### [Security,A2A] An unknown agent path is rejected with -32602
+
+When a client POSTs to `/a2a/{ns}/{prefix}` for a prefix with no registered agent, the router returns a JSON-RPC `-32602` error and never forwards the request upstream.
+
+### [Security,A2A] An unsupported method is rejected with -32004
+
+When a client invokes a method the gateway does not route (e.g. `ListTasks`), the router rejects it with JSON-RPC `-32004`, never forwarding it — deferred methods could otherwise return tasks across principals.
+
+### [Security,A2A] An embedded push notification config is rejected with -32003
+
+When a `SendMessage` carries a `configuration.pushNotificationConfig`, the router rejects it with JSON-RPC `-32003` — the gateway does not support push notifications.
+
+### [A2A] SendStreamingMessage events stream through to completion
+
+When a client invokes `SendStreamingMessage`, the router keeps the stream open and forwards each SSE event unmodified; the client receives `data:` events through the terminal `TASK_STATE_COMPLETED`.
+
 ### [Full] Large response payload from backend MCP
 
 - When a backend MCP server returns a large response (e.g. a tool that returns a multi-megabyte file or dataset), the gateway should stream the full response back to the client without truncation or corruption. The response body should match byte-for-byte what the upstream sent.
