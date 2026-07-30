@@ -146,6 +146,11 @@ func protocol2026PublicHostDefault() string {
 	return "mcp.protocol-2026." + e2eDomain
 }
 
+// protocol2026ServerHost returns a server hostname for the protocol-2026 listener.
+func protocol2026ServerHost(subdomain string) string {
+	return subdomain + ".protocol-2026." + e2eDomain
+}
+
 // public hosts - derived from E2E_DOMAIN
 var (
 	gatewayPublicHost        = goenv.GetDefault("GATEWAY_PUBLIC_HOST", gatewayPublicHostDefault())

@@ -68,7 +68,7 @@ var _ = Describe("Dual Protocol Gateway", Ordered, func() {
 			InNamespace(dualProtoNamespace).
 			WithBackendTarget("mcp-test-server1", 9090).
 			WithBackendNamespace(TestServerNameSpace).
-			WithHostname("stateful.protocol-2026.127-0-0-1.sslip.io").
+			WithHostname(protocol2026ServerHost("stateful")).
 			WithPrefix("sf_").
 			WithSectionName(Protocol2026ListenerName).
 			WithParentGateway(GatewayName, GatewayNamespace).
@@ -85,7 +85,7 @@ var _ = Describe("Dual Protocol Gateway", Ordered, func() {
 			InNamespace(dualProtoNamespace).
 			WithBackendTarget("mcp-test-stateless-server", 9090).
 			WithBackendNamespace(TestServerNameSpace).
-			WithHostname("stateless.protocol-2026.127-0-0-1.sslip.io").
+			WithHostname(protocol2026ServerHost("stateless")).
 			WithPrefix("sl_").
 			WithSectionName(Protocol2026ListenerName).
 			WithParentGateway(GatewayName, GatewayNamespace).
@@ -274,7 +274,7 @@ var _ = Describe("Dual Protocol Gateway", Ordered, func() {
 				InNamespace(dualProtoNamespace).
 				WithBackendTarget("mcp-test-stateless-server", 9090).
 				WithBackendNamespace(TestServerNameSpace).
-				WithHostname("uspec-sl.protocol-2026.127-0-0-1.sslip.io").
+				WithHostname(protocol2026ServerHost("uspec-sl")).
 				WithPrefix("usl_").
 				WithUserSpecificList().
 				WithSectionName(Protocol2026ListenerName).
@@ -315,7 +315,7 @@ var _ = Describe("Dual Protocol Gateway", Ordered, func() {
 				InNamespace(dualProtoNamespace).
 				WithBackendTarget("mcp-test-stateless-server", 9090).
 				WithBackendNamespace(TestServerNameSpace).
-				WithHostname("uspec-cross.protocol-2026.127-0-0-1.sslip.io").
+				WithHostname(protocol2026ServerHost("uspec-cross")).
 				WithPrefix("ucross_").
 				WithUserSpecificList().
 				WithSectionName(Protocol2026ListenerName).
@@ -364,7 +364,7 @@ var _ = Describe("Dual Protocol Gateway", Ordered, func() {
 				InNamespace(dualProtoNamespace).
 				WithBackendTarget("mcp-test-stateless-server", 9090).
 				WithBackendNamespace(TestServerNameSpace).
-				WithHostname("noprefix.protocol-2026.127-0-0-1.sslip.io").
+				WithHostname(protocol2026ServerHost("noprefix")).
 				WithSectionName(Protocol2026ListenerName).
 				WithParentGateway(GatewayName, GatewayNamespace).
 				Build()
