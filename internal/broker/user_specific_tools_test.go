@@ -401,6 +401,17 @@ func (m *mockActiveMCPServer) GetManagedPrompts() []mcp.Prompt             { ret
 func (m *mockActiveMCPServer) GetServedManagedPrompt(_ string) *mcp.Prompt { return nil }
 func (m *mockActiveMCPServer) Config() config.MCPServer                    { return m.cfg }
 func (m *mockActiveMCPServer) configPtr() *config.MCPServer                { return &m.cfg }
+func (m *mockActiveMCPServer) GetToolHints(_ string) (upstream.ToolHints, bool) {
+	return upstream.ToolHints{}, false
+}
+func (m *mockActiveMCPServer) SupportedVersions() []string   { return nil }
+func (m *mockActiveMCPServer) SupportsVersion(_ string) bool { return false }
+func (m *mockActiveMCPServer) ToolsCacheMetadata() upstream.CacheMetadata {
+	return upstream.CacheMetadata{}
+}
+func (m *mockActiveMCPServer) PromptsCacheMetadata() upstream.CacheMetadata {
+	return upstream.CacheMetadata{}
+}
 
 // seedUserSession dials the fake upstream and stores a pooled session for
 // the given gateway session ID.
