@@ -54,7 +54,7 @@ The broker computes `min()` across upstream `ttlMs` values, ignoring zeros. Upst
 
 ### Aggregated cacheScope
 
-Any private-scoped upstream or `userSpecificList` server makes the entire response `"private"`. No partial caching — the response is one aggregated list.
+Any private-scoped upstream, `ttlMs: 0` upstream, or `userSpecificList` server makes the entire response `"private"`. No partial caching — the response is one aggregated list.
 
 ### userSpecificList coexistence
 
