@@ -167,13 +167,15 @@ Docs on main are published to docs.kuadrant.io, so version references must point
 git checkout main && git pull upstream main
 git checkout -b bump-version-{VERSION}
 ./scripts/set-release-version.sh {VERSION}
-make bundle VERSION={VERSION}
+make bundle
 ```
+
+Note: `make bundle` runs without `VERSION` so the bundle CSV keeps the default `latest` image tags and `0.0.0` version. CI regenerates the bundle the same way, so the CRD sync check will pass. The versioned image refs in docs, scripts, and deployment manifests come from `set-release-version.sh`.
 
 Show the diff and ask the user to confirm, then commit:
 ```bash
 git add -u config/ charts/ docs/ bundle/ scripts/
-git commit -s -m "Update version to {VERSION}"
+git commit -s -m "Bump version to {VERSION}"
 ```
 
 Then tell the user to push and open a PR:
