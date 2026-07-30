@@ -17,6 +17,7 @@ Isolate protocol-specific broker behavior behind a `ProtocolHandler` interface w
 - **G3:** Upstream notifications from 2026 backends use `subscriptions/listen`
 - **G4:** 2025 client responses unchanged
 - **G5:** Protocol-specific broker logic isolated behind an interface so 2025 removal is a clean delete
+- **G6:** `prompts/list` filtered by protocol version — 2026 clients only see prompts from 2026-capable upstreams
 
 ## Non-Goals
 
@@ -40,6 +41,10 @@ The gateway automatically fetches per-user tools from that upstream without requ
 ### When a 2026 upstream sends a tools list changed notification
 
 The broker receives the change via `subscriptions/listen`, updates its aggregated tool list, and notifies subscribed 2026 clients through the SDK's subscription system.
+
+### When a 2026 client lists prompts from a gateway with mixed-protocol upstreams
+
+The response must only include prompts from upstreams that support the 2026 protocol. Prompts from 2025-only upstreams must be excluded — a 2026 client cannot call `prompts/get` against a 2025-only upstream.
 
 ## Constraints
 
@@ -114,9 +119,13 @@ The spec puts `ttlMs`/`cacheScope` on every list result type (`tools/list`, `pro
 
 When `CacheScope` or `TTLMs` changes (detected on re-list), the broker atomically rebuilds `perRequestServers` immediately — not deferred to the next `OnConfigChange`. This prevents a window where a newly-private upstream is still treated as shared. 2026 upstreams with `"private"` scope or `ttlMs: 0` are added alongside CRD-declared `userSpecificList` servers.
 
+### Protocol filtering for tools and prompts
+
+`tools/list` already filters by protocol version via `toolsForProtocol` — a pre-computed cache partitioned into stateful (2025) and stateless (2026) tool sets, rebuilt on tool changes. `prompts/list` needs the same treatment: `promptsForProtocol` backed by `statefulPrompts`/`statelessPrompts` caches rebuilt alongside the tool caches. Without this, a 2026 client sees prompts from 2025-only upstreams that it cannot call via `prompts/get`.
+
 ### Aggregated values in filteringMiddleware
 
-After `FetchUserSpecificTools` and `FilterTools` run, the middleware computes aggregated `ttlMs` and `cacheScope` from contributing upstreams and sets them on the result.
+After protocol filtering, `FetchUserSpecificTools`, and `FilterTools` run, the middleware computes aggregated `ttlMs` and `cacheScope` from contributing upstreams and sets them on the result. The same aggregation applies to `prompts/list`.
 
 For 2025 clients, the compat handler strips these fields downstream — no change needed there. 2026 clients already bypass the compat handler via `protocolRouter` (verification task only).
 

@@ -64,6 +64,14 @@ When the middleware processes a `tools/list` result for a 2026 client, it calls 
 
 Same as tools/list but for `prompts/list` — aggregated cache fields set on the prompt list result.
 
+### promptsForProtocol filters prompts by upstream version
+
+When a 2026 client sends `prompts/list`, the middleware calls `promptsForProtocol` which returns only prompts from 2026-capable upstreams. Prompts from 2025-only upstreams are excluded. A 2025 client sees only prompts from 2025-capable upstreams. Mirrors the existing `toolsForProtocol` behavior.
+
+### promptsForProtocol cache rebuilt on prompt changes
+
+When prompts are added or removed from the gateway server, the `statefulPrompts`/`statelessPrompts` caches are rebuilt alongside the tool caches. Verified by checking that a newly registered prompt from a 2026 upstream appears in the 2026 prompt set.
+
 ### compatHandler strips ttlMs and cacheScope for 2025 clients
 
 When a 2025 client receives a `tools/list` response that has `ttlMs` and `cacheScope` set by the middleware, the compat handler's `rewriteToolsList` removes them. Existing test coverage may already verify this — confirm and extend if needed.
@@ -100,6 +108,10 @@ A 2026 upstream sends `tools/list_changed`. The broker receives it via `subscrip
 ### [Broker2026] 2025 upstream GET SSE notification unaffected
 
 A 2025 upstream sends `tools/list_changed` via GET SSE. The broker processes it and refreshes tools normally. Verifies 2025 notification path is not regressed. Existing notification e2e tests may already cover this — extend if needed rather than duplicating.
+
+### [Happy,Broker2026] 2026 client prompts/list excludes 2025-only prompts
+
+A gateway has both 2025 and 2026 upstreams, each with prompts. A 2026 client sends `prompts/list`. The response includes only prompts from the 2026 upstream. Prompts from the 2025-only upstream are absent. A 2025 client sends `prompts/list` and sees only the 2025 upstream's prompts.
 
 ### [Broker2026,Security] Private scope prevents cross-user tool list leak
 
