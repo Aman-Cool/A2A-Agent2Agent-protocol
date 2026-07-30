@@ -98,7 +98,7 @@ func (broker *mcpBrokerImpl) FetchUserSpecificTools(ctx context.Context, headers
 		g, gCtx := errgroup.WithContext(ctx)
 		for _, srv := range matching {
 			g.Go(func() error {
-				tools, err := broker.doFetchToolsStateless(gCtx, srv, userHeaders)
+				tools, err := broker.fetchToolsStateless(gCtx, srv, userHeaders)
 				if err != nil {
 					broker.logger.Error("failed to fetch user-specific tools (stateless)", "server", srv.name, "error", err)
 					return nil
@@ -121,7 +121,7 @@ func (broker *mcpBrokerImpl) FetchUserSpecificTools(ctx context.Context, headers
 		g, gCtx := errgroup.WithContext(ctx)
 		for _, srv := range matching {
 			g.Go(func() error {
-				tools, err := broker.fetchToolsFromServer(gCtx, srv, userHeaders, gatewaySessionID)
+				tools, err := broker.fetchToolsStateful(gCtx, srv, userHeaders, gatewaySessionID)
 				if err != nil {
 					broker.logger.Error("failed to fetch user-specific tools", "server", srv.name, "error", err)
 					return nil
@@ -143,7 +143,7 @@ func (broker *mcpBrokerImpl) FetchUserSpecificTools(ctx context.Context, headers
 	}
 }
 
-func (broker *mcpBrokerImpl) fetchToolsFromServer(ctx context.Context, srv userSpecificServer, userHeaders map[string]string, gatewaySessionID string) ([]mcp.Tool, error) {
+func (broker *mcpBrokerImpl) fetchToolsStateful(ctx context.Context, srv userSpecificServer, userHeaders map[string]string, gatewaySessionID string) ([]mcp.Tool, error) {
 	tools, err := broker.doFetchTools(ctx, srv, userHeaders, gatewaySessionID)
 	if err != nil {
 		return nil, err
@@ -239,9 +239,9 @@ func (broker *mcpBrokerImpl) doFetchTools(ctx context.Context, srv userSpecificS
 	return &fetchResult{tools: validTools, sessionID: session.ID()}, nil
 }
 
-// doFetchToolsStateless creates a fresh connection, lists tools, and closes
+// fetchToolsStateless creates a fresh connection, lists tools, and closes
 // immediately. no session pool, no caching — each call is independent.
-func (broker *mcpBrokerImpl) doFetchToolsStateless(ctx context.Context, srv userSpecificServer, userHeaders map[string]string) ([]mcp.Tool, error) {
+func (broker *mcpBrokerImpl) fetchToolsStateless(ctx context.Context, srv userSpecificServer, userHeaders map[string]string) ([]mcp.Tool, error) {
 	ctx, span := brokerTracer().Start(ctx, "broker.user-specific-tools.fetch-server-stateless",
 		trace.WithAttributes(
 			attribute.String("mcp.server.name", srv.name),
@@ -456,7 +456,7 @@ func (broker *mcpBrokerImpl) fetchStatefulUserTools(ctx context.Context, servers
 	g, gCtx := errgroup.WithContext(ctx)
 	for _, srv := range servers {
 		g.Go(func() error {
-			tools, err := broker.fetchToolsFromServer(gCtx, srv, userHeaders, gatewaySessionID)
+			tools, err := broker.fetchToolsStateful(gCtx, srv, userHeaders, gatewaySessionID)
 			if err != nil {
 				broker.logger.Error("failed to fetch user-specific tools", "server", srv.name, "error", err)
 				return nil
@@ -486,7 +486,7 @@ func (broker *mcpBrokerImpl) fetchStatelessUserTools(ctx context.Context, server
 	g, gCtx := errgroup.WithContext(ctx)
 	for _, srv := range servers {
 		g.Go(func() error {
-			tools, err := broker.doFetchToolsStateless(gCtx, srv, userHeaders)
+			tools, err := broker.fetchToolsStateless(gCtx, srv, userHeaders)
 			if err != nil {
 				broker.logger.Error("failed to fetch user-specific tools (stateless)", "server", srv.name, "error", err)
 				return nil
