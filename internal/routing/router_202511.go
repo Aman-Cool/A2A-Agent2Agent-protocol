@@ -524,7 +524,7 @@ func (r *Router202511) initializeMCPServerSession(ctx context.Context, mcpReq *M
 			mcpotel.SpanError(initSpan, err, "failed to initialize backend session")
 			var httpErr *transport.HTTPStatusError
 			if errors.As(err, &httpErr) && httpErr.Code >= 400 && httpErr.Code < 500 {
-				return "", NewRouterErrorf(int32(httpErr.Code), "failed to create session for mcp server: %w", err)
+				return "", NewRouterError(int32(httpErr.Code), fmt.Errorf("failed to create session for mcp server: %w", err)) //nolint:gosec,nolintlint // code bounded to [400,499] by check above
 			}
 			return "", NewRouterErrorf(500, "failed to create session for mcp server: %w", err)
 		}
