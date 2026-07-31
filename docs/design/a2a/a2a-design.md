@@ -71,9 +71,11 @@ ownership as later phases (see [Implementation Phases](#implementation-phases)).
   authenticated extended agent card (`GetExtendedAgentCard`), and the `pushNotificationConfig` operations
   are out of scope for this design. The supported surface is `SendMessage`, `SendStreamingMessage`,
   `GetTask`, `CancelTask`, and `SubscribeToTask`; the rest are recorded as future work, not built here.
-  Deferred methods are **rejected at the router** (`-32004 UnsupportedOperationError`), never forwarded —
-  a forwarded `ListTasks` in particular could return tasks across principals, since the gateway's
-  per-principal ownership scoping does not exist upstream.
+  Once the gateway enforces ownership, deferred methods are **rejected at the router**
+  (`-32004 UnsupportedOperationError`), never forwarded — a forwarded `ListTasks` in particular could
+  return tasks across principals, since the gateway's per-principal ownership scoping does not exist
+  upstream. (The rejection lands with the ownership enforcement it protects; until then — see
+  [Implementation Phases](#implementation-phases) — the router labels methods rather than gating them.)
 
 ## Implementation Phases
 
@@ -113,9 +115,11 @@ which phase 1 delegates to the agent, so the router labels methods rather than g
 ### Phase 2 — registration and discovery
 
 The `A2AAgentRegistration` CRD and controller, the broker card cache with fail-closed interface
-validation, and verbatim card serving — the discovery half of this document. Gated on the long-term
-home for A2A support settling (the CRD question) and on the broker stabilizing after the MCP
-spec-version work (the churn question). The multi-agent discovery convention (RFC 9727 catalog vs
+validation, verbatim card serving, and registry-backed request routing (the router resolving
+`/a2a/{namespace}/{prefix}` to the agent and setting `:authority`, at which point `x-a2a-agent`
+becomes the namespace-qualified identity) — the registration-and-discovery half of this document.
+Gated on the long-term home for A2A support settling (the CRD question) and on the broker
+stabilizing after the MCP spec-version work (the churn question). The multi-agent discovery convention (RFC 9727 catalog vs
 the emerging AI Catalog) stays open until then, at no cost now since phase 1 serves no catalog.
 
 ### Phase 3 — task ownership and lifecycle observability
@@ -287,7 +291,7 @@ additively once the working-group spec stabilizes. Nothing ships a catalog befor
 A2A defines **no card-change notification** — none of its methods is a server-initiated
 "agent card changed" push, and the AgentCard carries no cache/ETag hints (only a provider-defined
 `version`). This differs structurally from MCP, where the broker holds a persistent connection and the
-upstream pushes `notifications/tools/list_changed` (`internal/broker/upstream/manager.go:265-273`) for
+upstream pushes `notifications/tools/list_changed` (`internal/broker/upstream/manager.go`) for
 near-instant updates. A2A has no such channel and no persistent discovery connection, so the gateway
 **must poll**.
 
@@ -592,10 +596,10 @@ const (
 )
 ```
 
-All three (`x-a2a-agent`, `x-a2a-task-id`, and `x-a2a-method`) are added to `internalOnlyHeaders` in
-`internal/mcp-router/headers.go` and to the `stripRouterHeaders` filter in
-`broker_router.go:buildGatewayHTTPRoute()` — any header a policy may key on must be router-derived,
-never client-suppliable.
+All three (`x-a2a-agent`, `x-a2a-task-id`, and `x-a2a-method`) are added to the router's
+internal-only header list (`InternalOnlyHeaders`, `internal/routing`) and to the `a2a` rule's
+`RequestHeaderModifier` filter in `broker_router.go:buildGatewayHTTPRoute()` — any header a policy
+may key on must be router-derived, never client-suppliable.
 
 ### Data Storage
 
@@ -764,7 +768,7 @@ An operator attaches an `AuthPolicy` as for MCP (`config/e2e/auth/mcps-auth-poli
 Authentication validates the OAuth2/OIDC bearer; authorization enforces **per-agent** RBAC using the
 router-set `x-a2a-agent` header, analogous to MCP's per-tool check on `x-mcp-toolname`.
 
-One routing caveat the policy author must know: the generated HTTPRoute currently serves public **card
+One routing caveat the policy author must know: the generated HTTPRoute serves public **card
 GET** discovery and authenticated **invocation POST** under the *same* `a2a` rule (`sectionName: a2a`),
 so an `AuthPolicy` targeting that section would also gate public discovery — a client couldn't fetch a
 card without a bearer. Discovery is meant to be public (the card is public metadata; the *invocation* is
@@ -809,7 +813,9 @@ body is read — and Authorino reads it for the per-agent decision (the same ord
 `x-mcp-toolname`, see `docs/design/security-architecture.md`). `x-a2a-agent` carries the
 **namespace-qualified** agent identity (`{namespace}/{prefix}`, derived from the `/a2a/{namespace}/{prefix}`
 path), so the authorization role above is namespace-scoped (`agent:{namespace}/{prefix}`) — two agents
-sharing a `prefix` across namespaces map to distinct roles, matching the collision-free routing. It is
+sharing a `prefix` across namespaces map to distinct roles, matching the collision-free routing. (In
+phase 1, before the registry exists, the header carries the bare path segment instead — see
+[Implementation Phases](#implementation-phases) — so phase-1 policy roles key on that convention.) It is
 router-derived and stripped from client input (HTTPRoute `RequestHeaderModifier` + `internalOnlyHeaders`),
 so a client cannot forge it to reach an unauthorized agent. Token exchange (RFC 8693) is available identically to
 MCP. Per-agent policies can also attach to each agent's own HTTPRoute (`targetRef`), enforced on the
@@ -847,14 +853,14 @@ A2A-specific Prometheus metrics are in [Future Considerations](#future-considera
 
 A2A is asynchronous: `SendMessage` (one HTTP request → one trace), then `GetTask`/`CancelTask`/
 `SubscribeToTask` minutes or hours later (separate requests → separate traces). W3C trace context
-(`traceparent`, extracted today by `extractTraceContext`, `internal/mcp-router/tracing.go:46`) links the
+(`traceparent`, extracted today by `extractTraceContext`, `internal/mcp-router/tracing.go`) links the
 hops **within** a single request — client → gateway → agent — but cannot link request 1 to request 2:
 different requests carry different trace IDs, so a stalled task's lifecycle is fragmented across N traces.
 Two complementary layers fix this:
 
 - **Inter-request correlation (the floor).** Every A2A span carries `a2a.task.id = {taskID}` as an
   attribute (alongside `a2a.method` and `a2a.agent`), set via an `a2aSpanAttributes()` analog of the
-  existing `spanAttributes()` (`tracing.go:51`). Because the task ID is the agent's own and passes
+  existing `spanAttributes()` (`internal/mcp-router/tracing.go`). Because the task ID is the agent's own and passes
   through unchanged, it is stable across every request for the task, so a single backend query —
   `{ span.a2a.task.id = "task-abc" }` in Tempo, the equivalent tag search in Jaeger — gathers **all**
   traces touching the task (send, polls, cancel) into one view. The same ID being the agent's own means
@@ -902,8 +908,7 @@ low-privilege client rides the gateway's credential. The agent's `securityScheme
 what it accepts. Two modes, mirroring MCP:
 
 - **Token pass-through (default).** The client's `Authorization: Bearer` is forwarded to the agent (MCP
-  forwards client headers verbatim unless exchange is configured — `request_handlers.go:706-714` passes
-  `authorization` through). Works when the agent trusts the same issuer and the token's audience covers
+  forwards client headers verbatim unless exchange is configured, passing `authorization` through). Works when the agent trusts the same issuer and the token's audience covers
   the agent.
 - **Token exchange (recommended).** A Kuadrant AuthPolicy has Authorino perform RFC 8693 exchange,
   replacing the client token with one scoped and **re-audienced to the agent** before the call (the
