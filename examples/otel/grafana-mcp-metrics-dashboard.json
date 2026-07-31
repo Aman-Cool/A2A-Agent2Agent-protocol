@@ -8,12 +8,6 @@
   "templating": {
     "list": [
       {
-        "name": "datasource",
-        "label": "Prometheus",
-        "type": "datasource",
-        "pluginId": "prometheus"
-      },
-      {
         "name": "server_name",
         "label": "Server",
         "type": "query",
@@ -22,6 +16,12 @@
         "multi": true,
         "includeAll": true,
         "current": { "selected": true, "text": "All", "value": "$__all" }
+      },
+      {
+        "name": "datasource",
+        "label": "Prometheus",
+        "type": "datasource",
+        "pluginId": "prometheus"
       }
     ]
   },
@@ -230,8 +230,8 @@
     },
     {
       "id": 8,
-      "title": "Request Rate per MCP Server (Istio)",
-      "description": "Requests through the Envoy gateway per MCP server. Requires examples/otel/istio-mcp-metrics.yaml to be applied.",
+      "title": "Gateway Request Rate by MCP Method (Istio)",
+      "description": "Request rate through the Envoy gateway broken down by MCP method. Reliable signal for all gateway traffic. Requires examples/otel/istio-mcp-metrics.yaml.",
       "type": "timeseries",
       "gridPos": { "x": 12, "y": 12, "w": 12, "h": 8 },
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
@@ -240,25 +240,45 @@
       },
       "targets": [
         {
-          "expr": "sum(rate(istio_requests_total{mcp_server_name!=\"\"}[1m])) by (mcp_server_name)",
-          "legendFormat": "{{mcp_server_name}}"
+          "expr": "sum(rate(istio_requests_total{mcp_method!=\"\",mcp_method!=\"unknown\"}[1m])) by (mcp_method)",
+          "legendFormat": "{{mcp_method}}"
         }
       ]
     },
     {
       "id": 9,
-      "title": "Request Latency per MCP Server p99 (Istio)",
-      "description": "p99 request latency through the Envoy gateway per MCP server. Requires examples/otel/istio-mcp-metrics.yaml to be applied.",
+      "title": "Gateway Error Rate by Response Code (Istio)",
+      "description": "4xx and 5xx error rates through the Envoy gateway. Spikes here indicate client errors or upstream failures visible at the gateway level.",
       "type": "timeseries",
       "gridPos": { "x": 0, "y": 20, "w": 12, "h": 8 },
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "fieldConfig": {
-        "defaults": { "unit": "ms", "custom": { "lineWidth": 2 } }
+        "defaults": { "unit": "reqps", "custom": { "lineWidth": 2 } },
+        "overrides": [
+          {
+            "matcher": { "id": "byFrameRefID", "options": "B" },
+            "properties": [
+              { "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } }
+            ]
+          },
+          {
+            "matcher": { "id": "byFrameRefID", "options": "A" },
+            "properties": [
+              { "id": "color", "value": { "fixedColor": "orange", "mode": "fixed" } }
+            ]
+          }
+        ]
       },
       "targets": [
         {
-          "expr": "histogram_quantile(0.99, sum(rate(istio_request_duration_milliseconds_bucket{mcp_server_name!=\"\"}[5m])) by (mcp_server_name, le))",
-          "legendFormat": "{{mcp_server_name}} p99"
+          "expr": "sum(rate(istio_requests_total{response_code=~\"4..\"}[1m])) by (response_code)",
+          "legendFormat": "{{response_code}}",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(rate(istio_requests_total{response_code=~\"5..\"}[1m])) by (response_code)",
+          "legendFormat": "{{response_code}}",
+          "refId": "B"
         }
       ]
     },
