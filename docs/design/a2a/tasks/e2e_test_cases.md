@@ -2,6 +2,10 @@
 
 > Test cases follow the format defined in `tests/e2e/test_cases.md`.
 > Tags: `Happy` (PR gate), `A2A` (A2A feature suite), `A2ASecurity` (auth/security paths).
+> These cases cover the full direction (registration, discovery, routing, ownership — phases 2
+> and 3 of the design). Phase 1's passthrough cases (router-set headers reaching the agent,
+> client-supplied `x-a2a-*` stripped, fail-closed `-32700`, flag-off inertness) are defined in
+> Task 5 of `tasks.md` and land with #1333.
 
 ---
 
