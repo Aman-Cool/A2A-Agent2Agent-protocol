@@ -26,7 +26,9 @@ gateway routes by that path. The ext_proc router detects A2A traffic by path pre
 correct upstream agent by path. Task IDs are assigned by the agent and pass through the gateway
 unchanged — routing is by path, so the gateway never needs to mint or rewrite them; it records which
 principal created each task to enforce ownership on later calls. All existing MCP behavior is
-unchanged. A2A support is entirely additive.
+unchanged. A2A support is entirely additive, and it lands incrementally behind an experimental
+`--enable-a2a` flag — a router-only passthrough cut first, with registration/discovery and task
+ownership as later phases (see [Implementation Phases](#implementation-phases)).
 
 ## Goals
 
@@ -72,6 +74,56 @@ unchanged. A2A support is entirely additive.
   Deferred methods are **rejected at the router** (`-32004 UnsupportedOperationError`), never forwarded —
   a forwarded `ListTasks` in particular could return tasks across principals, since the gateway's
   per-principal ownership scoping does not exist upstream.
+
+## Implementation Phases
+
+This document describes the full direction; it lands incrementally, gated behind an experimental
+`--enable-a2a` router flag (default off) so nothing A2A-related is live unless a user explicitly opts
+in, and any APIs introduced along the way are alpha. The phase boundaries follow two constraints from
+review: no new CRDs while the long-term home for A2A support is still being settled, and no broker
+changes while the broker is mid-churn on the new MCP spec version. Phases 2 and 3 are the direction
+as currently understood, not a commitment — where A2A support lands long-term may change how they ship.
+
+### Phase 1 — A2A passthrough with auditing, auth and observability
+
+Router-only. With `--enable-a2a` set, for traffic on `/a2a` routes the router strips inbound
+`x-a2a-*` request headers before any policy runs (the same router-owned-header pattern MCP uses),
+parses POST bodies envelope-only (JSON-RPC `method` and `id`; params and heavy fields are never
+decoded, keeping the hot path cheap), and sets `x-a2a-method` and `x-a2a-agent`. The agent identity
+is the first path segment after `/a2a/` — a documented convention, since the A2A body names no agent
+and, with no CRD, the path is the only source (no namespace qualification in this mode). An
+unparseable POST on an `/a2a` route fails closed (`-32700`) rather than passing through unlabeled —
+a request that reached an agent without headers would evade exactly the auditing and authorization
+this phase provides. GETs (card discovery) pass through.
+
+Users hand-author the HTTPRoutes from the gateway to their agents (no CRD) and attach them to the
+listener the gateway extension targets (ext_proc is listener-scoped). The router-set headers feed
+Istio Telemetry (auditing and observability) and AuthPolicy rules (per-agent, per-method
+authorization) with no further gateway code. Two trust boundaries are documented rather than
+enforced: task isolation is the upstream agent's responsibility (the gateway forwards the client's
+bearer, so agents can authenticate callers; `a2a-go`'s task store exposes an `Authenticator` hook for
+this), and agents fronted by the gateway should advertise their gateway URL in their card and not be
+independently reachable.
+
+Deliberately out of phase 1: the `A2AAgentRegistration` CRD and controller, the API catalog, card
+serving and validation, gateway routing (the user's routes route), gateway-side task ownership, and
+the deferred-method rejections (`-32004`) — their rationale is protecting gateway-scoped ownership,
+which phase 1 delegates to the agent, so the router labels methods rather than gating them.
+
+### Phase 2 — registration and discovery
+
+The `A2AAgentRegistration` CRD and controller, the broker card cache with fail-closed interface
+validation, and verbatim card serving — the discovery half of this document. Gated on the long-term
+home for A2A support settling (the CRD question) and on the broker stabilizing after the MCP
+spec-version work (the churn question). The multi-agent discovery convention (RFC 9727 catalog vs
+the emerging AI Catalog) stays open until then, at no cost now since phase 1 serves no catalog.
+
+### Phase 3 — task ownership and lifecycle observability
+
+The insert-only `(agent, taskID) → principal` ownership records with fail-closed continuation
+checks, and read-only SSE observation for task-lifecycle auditing — the enforcement half of this
+document. Builds on phase 1's headers and phase 2's registration; the storage and observation
+machinery has already been validated end-to-end in a working prototype.
 
 ## Job Stories
 
@@ -225,9 +277,10 @@ a Linux Foundation working group) — its own format at `/.well-known/ai-catalog
 a natural fit for a gateway fronting both protocols. The catalog layer here is deliberately thin —
 one handler marshalling the broker's agent index — so serving `ai-catalog.json` alongside (or
 eventually instead of) the RFC 9727 catalog is an additive endpoint, not a redesign.
-**[OPEN: discovery convention held deliberately loose — the RFC 9727 catalog is implemented and
-running; upstream is converging on AI Catalog, which this design can serve additively once the
-working-group spec stabilizes. David endorsed holding it loosely; pending Jason/Craig.]**
+The discovery convention is held deliberately loose: the RFC 9727 catalog is implemented and running
+in the prototype, upstream is converging on AI Catalog, and this design can serve the latter
+additively once the working-group spec stabilizes. Nothing ships a catalog before
+[phase 2](#implementation-phases), so the choice stays open at no cost.
 
 #### Upstream Agent Card sync (no card-change push)
 
