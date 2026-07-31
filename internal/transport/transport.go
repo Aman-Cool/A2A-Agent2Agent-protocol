@@ -122,6 +122,7 @@ func (s *StatusCapturingRoundTripper) RoundTrip(req *http.Request) (*http.Respon
 	}
 	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	_, _ = io.Copy(io.Discard, resp.Body) // drain remainder for connection reuse
 	return nil, &HTTPStatusError{Code: resp.StatusCode, Body: string(body)}
 }
 
