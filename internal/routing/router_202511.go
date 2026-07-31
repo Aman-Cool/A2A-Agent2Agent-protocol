@@ -18,6 +18,7 @@ import (
 	internaljwt "github.com/Kuadrant/mcp-gateway/internal/jwt"
 	mcpotel "github.com/Kuadrant/mcp-gateway/internal/otel"
 	"github.com/Kuadrant/mcp-gateway/internal/session"
+	"github.com/Kuadrant/mcp-gateway/internal/transport"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
@@ -521,6 +522,10 @@ func (r *Router202511) initializeMCPServerSession(ctx context.Context, mcpReq *M
 		if err != nil {
 			r.Logger.ErrorContext(ctx, "failed to get remote session ", "error", err)
 			mcpotel.SpanError(initSpan, err, "failed to initialize backend session")
+			var httpErr *transport.HTTPStatusError
+			if errors.As(err, &httpErr) && httpErr.Code >= 400 && httpErr.Code < 500 {
+				return "", NewRouterErrorf(int32(httpErr.Code), "failed to create session for mcp server: %w", err)
+			}
 			return "", NewRouterErrorf(500, "failed to create session for mcp server: %w", err)
 		}
 		var sessionCloser = func() {

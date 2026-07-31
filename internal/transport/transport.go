@@ -4,6 +4,7 @@ package transport
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
@@ -85,6 +86,43 @@ func SSEEventData(event []byte) (data [][]byte, commentOnly bool) {
 		}
 	}
 	return data, commentOnly
+}
+
+// HTTPStatusError is returned by StatusCapturingRoundTripper when the
+// upstream responds with a non-2xx status code. It preserves the original
+// HTTP status so callers higher in the stack can propagate 4xx faithfully
+// instead of collapsing everything to 500.
+type HTTPStatusError struct {
+	Code int
+	Body string
+}
+
+func (e *HTTPStatusError) Error() string {
+	if e.Body != "" {
+		return fmt.Sprintf("upstream returned HTTP %d: %s", e.Code, e.Body)
+	}
+	return fmt.Sprintf("upstream returned HTTP %d", e.Code)
+}
+
+// StatusCapturingRoundTripper intercepts non-2xx HTTP responses and converts
+// them into a typed HTTPStatusError so the status code survives SDK error
+// wrapping. The response body is read and closed before returning the error.
+type StatusCapturingRoundTripper struct {
+	Base http.RoundTripper
+}
+
+// RoundTrip implements http.RoundTripper.
+func (s *StatusCapturingRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := s.Base.RoundTrip(req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return resp, nil
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	return nil, &HTTPStatusError{Code: resp.StatusCode, Body: string(body)}
 }
 
 // DiscoverShortCircuit answers the SDK client's SEP-2575 server/discover

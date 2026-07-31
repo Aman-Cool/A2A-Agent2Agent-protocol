@@ -20,6 +20,7 @@ import (
 	"github.com/Kuadrant/mcp-gateway/internal/elicitation"
 	"github.com/Kuadrant/mcp-gateway/internal/idmap"
 	"github.com/Kuadrant/mcp-gateway/internal/session"
+	"github.com/Kuadrant/mcp-gateway/internal/transport"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/require"
 )
@@ -1233,6 +1234,92 @@ func TestInitializeMCPServerSession_PassThroughHeaders(t *testing.T) {
 	require.Equal(t, "tools/call", captured["x-mcp-method"])
 	require.Equal(t, "dummy", captured["x-mcp-servername"])
 	require.Equal(t, "mcp-router", captured["user-agent"])
+}
+
+func TestInitializeMCPServerSession_UpstreamErrorPropagation(t *testing.T) {
+	testCases := []struct {
+		name           string
+		initErr        error
+		wantStatusCode int
+	}{
+		{
+			name:           "upstream 403 propagated to client",
+			initErr:        fmt.Errorf("failed to create client: %w", &transport.HTTPStatusError{Code: 403, Body: `{"message":"MCP Access denied"}`}),
+			wantStatusCode: 403,
+		},
+		{
+			name:           "upstream 401 propagated to client",
+			initErr:        fmt.Errorf("failed to create client: %w", &transport.HTTPStatusError{Code: 401, Body: "Unauthorized"}),
+			wantStatusCode: 401,
+		},
+		{
+			name:           "upstream 400 propagated to client",
+			initErr:        fmt.Errorf("failed to create client: %w", &transport.HTTPStatusError{Code: 400, Body: "Bad Request"}),
+			wantStatusCode: 400,
+		},
+		{
+			name:           "upstream 502 wrapped as 500",
+			initErr:        fmt.Errorf("failed to create client: %w", &transport.HTTPStatusError{Code: 502, Body: "Bad Gateway"}),
+			wantStatusCode: 500,
+		},
+		{
+			name:           "connection refused wrapped as 500",
+			initErr:        fmt.Errorf("failed to create client: %w", fmt.Errorf("dial tcp: connection refused")),
+			wantStatusCode: 500,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			mockInitForClient := func(_ context.Context, _ string, _ *config.MCPServer, _ map[string]string, _ bool, _ *clients.HairpinClientPool) (*mcp.ClientSession, error) {
+				return nil, tc.initErr
+			}
+
+			serverConfigs := []*config.MCPServer{
+				{
+					Name:     "dummy",
+					URL:      "http://localhost:8080/mcp",
+					Prefix:   "s_",
+					State:    "Enabled",
+					Hostname: "backend.example.com",
+				},
+			}
+			router, _ := newTestRouter(t, serverConfigs, map[string]string{}, map[string]string{})
+			router.InitForClient = mockInitForClient
+			router.RoutingConfig.Store(&config.MCPServersConfig{
+				Servers:                    serverConfigs,
+				MCPGatewayInternalHostname: "mcp-gateway.local",
+			})
+
+			validToken := router.JWTManager.Generate()
+			table := NewTableBuilder().
+				AddTool("s_mytool", &ServerRoute{
+					Name:   "dummy",
+					Host:   "backend.example.com",
+					Prefix: "s_",
+					Path:   "/mcp",
+					URL:    "http://localhost:8080/mcp",
+				}).
+				Build()
+			router.Table = func() RoutingTable { return table }
+
+			req := &MCPRequest{
+				ID:      ptr.To(0),
+				JSONRPC: "2.0",
+				Method:  "tools/call",
+				Params:  map[string]any{"name": "s_mytool"},
+				Headers: map[string]string{
+					"mcp-session-id": validToken,
+					"authorization":  "Bearer client-token",
+				},
+			}
+
+			decision := router.RouteRequest(context.Background(), &Request{Parsed: req})
+			require.NotNil(t, decision.Error, "decision must carry an error when init fails")
+			require.Equal(t, tc.wantStatusCode, decision.Error.StatusCode,
+				"4xx should propagate, 5xx and non-HTTP errors should become 500")
+		})
+	}
 }
 
 func TestMCPRequest_PromptName(t *testing.T) {
