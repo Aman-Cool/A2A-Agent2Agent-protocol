@@ -31,6 +31,18 @@ func buildTestTable() *Table {
 			Path:             "/mcp",
 			UserSpecificList: true,
 		}).
+		AddResourcePrefix("app_", &ServerRoute{
+			Name:   "app",
+			Host:   "app.mcp.local",
+			Prefix: "app_",
+			Path:   "/mcp",
+		}).
+		AddResourcePrefix("app_admin_", &ServerRoute{
+			Name:   "app-admin",
+			Host:   "app-admin.mcp.local",
+			Prefix: "app_admin_",
+			Path:   "/mcp",
+		}).
 		AddBrokerTool("discover_tools").
 		AddBrokerTool("select_tools").
 		AddAnnotation("github:github_:github.mcp.local", "search", &ToolAnnotation{
@@ -94,6 +106,38 @@ func TestLookupPrefix(t *testing.T) {
 	}
 }
 
+func TestLookupResourcePrefix(t *testing.T) {
+	table := buildTestTable()
+
+	r, ok := table.LookupResourcePrefix("app_template.html")
+	if !ok {
+		t.Fatal("expected prefix match")
+	}
+	if r.Name != "app" {
+		t.Errorf("expected name app, got %s", r.Name)
+	}
+
+	_, ok = table.LookupResourcePrefix("jira_template.html")
+	if ok {
+		t.Error("expected no prefix match")
+	}
+}
+
+// TestLookupResourcePrefix_LongestMatch confirms an authority ambiguous
+// between two registered prefixes (app_ vs app_admin_) resolves to the
+// longer, more specific one - matching GetServerInfoByResource's approach.
+func TestLookupResourcePrefix_LongestMatch(t *testing.T) {
+	table := buildTestTable()
+
+	r, ok := table.LookupResourcePrefix("app_admin_template.html")
+	if !ok {
+		t.Fatal("expected prefix match")
+	}
+	if r.Name != "app-admin" {
+		t.Errorf("expected longest-prefix match to win, got %s", r.Name)
+	}
+}
+
 func TestIsBrokerTool(t *testing.T) {
 	table := buildTestTable()
 
@@ -142,6 +186,9 @@ func TestEmptyTable(t *testing.T) {
 	}
 	if _, ok := table.LookupPrefix("anything"); ok {
 		t.Error("empty table should not match prefixes")
+	}
+	if _, ok := table.LookupResourcePrefix("anything"); ok {
+		t.Error("empty table should not match resource prefixes")
 	}
 	if table.IsBrokerTool("anything") {
 		t.Error("empty table should not have broker tools")
