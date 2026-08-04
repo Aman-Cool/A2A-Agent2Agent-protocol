@@ -245,17 +245,18 @@ var _ = Describe("Custom TLS Configuration", Ordered, func() {
 		Expect(k8sClient.Create(ctx, dr)).To(Succeed())
 		testResources = append(testResources, dr)
 
-		By("Reconnecting MCP client for fresh session after DestinationRule creation")
+		By("Closing existing client before retrying with fresh sessions")
 		_ = mcpGatewayClient.Close()
-		Eventually(func(g Gomega) {
-			var err error
-			mcpGatewayClient, err = NewStatefulClientWithNotifications(ctx, gatewayURL, nil)
-			g.Expect(err).NotTo(HaveOccurred())
-		}, TestTimeoutMedium, TestRetryInterval).Should(Succeed())
+		mcpGatewayClient = nil
 
 		By("Calling tools/call — Envoy re-encrypts via DestinationRule TLS origination")
 		Eventually(func(g Gomega) {
-			res, err := mcpGatewayClient.CallTool(ctx, &mcp.CallToolParams{
+			// recreate client each attempt; a failed lazy-init may return a
+			// non-transient status that terminates the SDK connection
+			client, err := NewStatefulClientWithNotifications(ctx, gatewayURL, nil)
+			g.Expect(err).NotTo(HaveOccurred())
+			defer func() { _ = client.Close() }()
+			res, err := client.CallTool(ctx, &mcp.CallToolParams{
 				Name:      toolName,
 				Arguments: map[string]string{"message": "tls-origination-test"},
 			})
