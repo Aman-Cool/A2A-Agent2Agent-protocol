@@ -254,7 +254,10 @@ var _ = Describe("Custom TLS Configuration", Ordered, func() {
 			// recreate client each attempt; a failed lazy-init may return a
 			// non-transient status that terminates the SDK connection
 			client, err := NewStatefulClientWithNotifications(ctx, gatewayURL, nil)
-			g.Expect(err).NotTo(HaveOccurred())
+			if err != nil {
+				g.Expect(err).NotTo(HaveOccurred())
+				return
+			}
 			defer func() { _ = client.Close() }()
 			res, err := client.CallTool(ctx, &mcp.CallToolParams{
 				Name:      toolName,
