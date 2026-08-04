@@ -190,7 +190,22 @@ scrape_configs:
         replacement: $1:9090
 ```
 
-If you have Prometheus Operator installed, use a `PodMonitor` targeting the same label and port 9090.
+If you have Prometheus Operator installed, use a `PodMonitor`:
+
+```yaml
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: mcp-broker
+  namespace: mcp-system
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mcp-gateway
+  podMetricsEndpoints:
+    - port: metrics
+      path: /metrics
+```
 
 ### Useful PromQL queries
 
@@ -214,6 +229,8 @@ sum(mcp_broker_tools_list_response_bytes)
 ### Istio gateway metrics (built-in)
 
 Istio emits these metrics automatically for all traffic through the gateway. The Istio gateway pod exposes them at `:15090/stats/prometheus`. Add a scrape job for this alongside the broker scrape config:
+
+> **Note:** If you are using the Kuadrant Operator, observability configuration (including Prometheus scraping) is managed centrally via the `Kuadrant` CR. See the [Kuadrant observability guide](https://docs.kuadrant.io/latest/kuadrant-operator/doc/observability/) for details.
 
 ```yaml
   - job_name: istio-gateway
