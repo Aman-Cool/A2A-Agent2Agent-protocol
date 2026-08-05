@@ -172,7 +172,40 @@ sleep 1
 curl http://localhost:9090/metrics
 ```
 
-For Prometheus scraping, add the broker pod IP as a scrape target. The broker `Service` is controller-managed and does not expose port 9090, so scrape by pod IP directly or use a `PodMonitor` if you have Prometheus Operator installed.
+For Prometheus scraping, the broker `Service` is controller-managed and does not expose port 9090, so scrape by pod IP directly. Use Kubernetes pod service discovery with the `app.kubernetes.io/name=mcp-gateway` label:
+
+```yaml
+scrape_configs:
+  - job_name: mcp-broker
+    kubernetes_sd_configs:
+      - role: pod
+        namespaces:
+          names: [mcp-system]
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
+        action: keep
+        regex: mcp-gateway
+      - source_labels: [__meta_kubernetes_pod_ip]
+        target_label: __address__
+        replacement: $1:9090
+```
+
+If you have Prometheus Operator installed, use a `PodMonitor`:
+
+```yaml
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: mcp-broker
+  namespace: mcp-system
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mcp-gateway
+  podMetricsEndpoints:
+    - port: metrics
+      path: /metrics
+```
 
 ### Useful PromQL queries
 
@@ -195,7 +228,25 @@ sum(mcp_broker_tools_list_response_bytes)
 
 ### Istio gateway metrics (built-in)
 
-Istio emits these metrics automatically for all traffic through the gateway — no configuration required:
+Istio emits these metrics automatically for all traffic through the gateway. The Istio gateway pod exposes them at `:15090/stats/prometheus`. Add a scrape job for this alongside the broker scrape config:
+
+> **Note:** If you are using the Kuadrant Operator, observability configuration (including Prometheus scraping) is managed centrally via the `Kuadrant` CR. See the [Kuadrant observability guide](https://docs.kuadrant.io/latest/kuadrant-operator/doc/observability/) for details.
+
+```yaml
+  - job_name: istio-gateway
+    metrics_path: /stats/prometheus
+    kubernetes_sd_configs:
+      - role: pod
+        namespaces:
+          names: [gateway-system]
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_label_gateway_istio_io_managed]
+        action: keep
+        regex: .+
+      - source_labels: [__meta_kubernetes_pod_ip]
+        target_label: __address__
+        replacement: $1:15090
+```
 
 | Metric | Type | Description |
 |--------|------|-------------|
@@ -238,5 +289,5 @@ sum(rate(istio_requests_total[5m])) by (mcp_method)
 
 ## Next Steps
 
-- For a pre-configured local observability stack (OTEL Collector, Tempo, Loki, Grafana), see the [observability example](https://github.com/Kuadrant/mcp-gateway/tree/release-0.6.0/examples/otel).
+- For a pre-configured local observability stack (OTEL Collector, Tempo, Loki, Grafana), see the [observability example](https://github.com/Kuadrant/mcp-gateway/tree/main/examples/otel).
 - To scale the gateway with shared session state, see the [scaling guide](./scaling.md).
