@@ -40,29 +40,33 @@ func (h *ProtocolHandler2026) ShouldFetchFresh(_ userSpecificServer, meta *upstr
 }
 
 // AggregateCache computes the aggregate ttlMs and cacheScope across
-// contributing upstreams. ttlMs is min of non-zero values (zero means
-// always-fetched, doesn't contribute). cacheScope is "private" if any
-// upstream is private or has userSpecificList.
+// contributing upstreams. ttlMs is min of non-zero values; any upstream
+// with TTLMs==0 forces the aggregate to 0 (uncacheable). cacheScope is
+// "private" if any upstream is private, user-specific, or zero-TTL.
 func (h *ProtocolHandler2026) AggregateCache(contributing []upstream.CacheMetadata) (int, string) {
 	if len(contributing) == 0 {
 		return 0, ""
 	}
 
 	minTTL := 0
+	hasZero := false
 	scope := upstream.CacheScopePublic
 
 	for i := range contributing {
 		c := &contributing[i]
-		if c.TTLMs > 0 {
-			if minTTL == 0 || c.TTLMs < minTTL {
-				minTTL = c.TTLMs
-			}
+		if c.TTLMs == 0 {
+			hasZero = true
+		} else if minTTL == 0 || c.TTLMs < minTTL {
+			minTTL = c.TTLMs
 		}
 		if c.CacheScope == upstream.CacheScopePrivate || c.UserSpecificList {
 			scope = upstream.CacheScopePrivate
 		}
 	}
 
+	if hasZero {
+		return 0, upstream.CacheScopePrivate
+	}
 	return minTTL, scope
 }
 

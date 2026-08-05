@@ -71,17 +71,17 @@ func TestProtocolHandler2026_AggregateCache_AllZeroTTL(t *testing.T) {
 		{TTLMs: 0, CacheScope: upstream.CacheScopePublic},
 	})
 	assert.Equal(t, 0, ttl)
-	assert.Equal(t, upstream.CacheScopePublic, scope)
+	assert.Equal(t, upstream.CacheScopePrivate, scope)
 }
 
-func TestProtocolHandler2026_AggregateCache_ZeroTTLIgnoredForMin(t *testing.T) {
+func TestProtocolHandler2026_AggregateCache_ZeroTTLForcesUncacheable(t *testing.T) {
 	h := NewProtocolHandler2026(nil)
 	ttl, scope := h.AggregateCache([]upstream.CacheMetadata{
 		{TTLMs: 60000, CacheScope: upstream.CacheScopePublic},
 		{TTLMs: 0, CacheScope: upstream.CacheScopePublic},
 	})
-	assert.Equal(t, 60000, ttl)
-	assert.Equal(t, upstream.CacheScopePublic, scope)
+	assert.Equal(t, 0, ttl)
+	assert.Equal(t, upstream.CacheScopePrivate, scope)
 }
 
 func TestProtocolHandler2026_AggregateCache_UserSpecificListForcesPrivate(t *testing.T) {
