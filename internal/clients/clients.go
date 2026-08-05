@@ -103,10 +103,16 @@ func Initialize(ctx context.Context, gatewayHost string, conf *config.MCPServer,
 		// the discover short circuit answers the SDK's server/discover
 		// probe in-process; the hairpin costs exactly the requests it did
 		// on mark3labs (initialize + notifications/initialized)
+		//
+		// StatusCapturingRoundTripper converts non-2xx responses into a
+		// typed error before the SDK sees them, preserving the HTTP status
+		// code that would otherwise be lost in the SDK's string wrapping.
 		Transport: &transport.DiscoverShortCircuit{
-			Base: &transport.HeaderRoundTripper{
-				Base:    base,
-				Headers: passThroughHeaders,
+			Base: &transport.StatusCapturingRoundTripper{
+				Base: &transport.HeaderRoundTripper{
+					Base:    base,
+					Headers: passThroughHeaders,
+				},
 			},
 		},
 	}
