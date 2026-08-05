@@ -29,7 +29,7 @@ func TestProtocolHandler2025_ShouldFetchFresh_UsesUserSpecificListOnly(t *testin
 		},
 		logger: slog.Default(),
 	}
-	h := NewProtocolHandler2025(b, slog.Default())
+	h := NewProtocolHandler2025(b)
 	srv := toUserSpecificServer(mockServer.cfg)
 
 	// regardless of cache metadata, ShouldFetchFresh should follow CRD field
@@ -51,14 +51,14 @@ func TestProtocolHandler2025_ShouldFetchFresh_FalseWhenNotUserSpecific(t *testin
 		},
 		logger: slog.Default(),
 	}
-	h := NewProtocolHandler2025(b, slog.Default())
+	h := NewProtocolHandler2025(b)
 	srv := toUserSpecificServer(mockServer.cfg)
 
 	require.False(t, h.ShouldFetchFresh(srv, nil))
 }
 
 func TestProtocolHandler2025_AggregateCache_ReturnsZero(t *testing.T) {
-	h := NewProtocolHandler2025(nil, slog.Default())
+	h := NewProtocolHandler2025(nil)
 
 	ttl, scope := h.AggregateCache([]upstream.CacheMetadata{
 		{TTLMs: 5000, CacheScope: "public"},
@@ -91,7 +91,7 @@ func TestProtocolHandler2025_FetchUserSpecificTools(t *testing.T) {
 		sessionCache:             cache,
 		userSpecificFetchTimeout: 10 * time.Second,
 	}
-	h := NewProtocolHandler2025(b, slog.Default())
+	h := NewProtocolHandler2025(b)
 
 	result := &mcp.ListToolsResult{
 		Tools: []*mcp.Tool{{Name: "cached-tool"}},
@@ -109,7 +109,7 @@ func TestProtocolHandler2025_FetchUserSpecificTools(t *testing.T) {
 }
 
 func TestProtocolHandler2025_FetchUserSpecificTools_EmptyServers(t *testing.T) {
-	h := NewProtocolHandler2025(nil, slog.Default())
+	h := NewProtocolHandler2025(nil)
 
 	result := &mcp.ListToolsResult{
 		Tools: []*mcp.Tool{{Name: "existing"}},

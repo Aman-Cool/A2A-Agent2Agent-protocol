@@ -89,58 +89,19 @@ func (broker *mcpBrokerImpl) FetchUserSpecificTools(ctx context.Context, headers
 
 	broker.logger.Debug("fetching user-specific tools", "serverCount", len(matching), "clientVersion", clientVersion)
 
-	userHeaders := filterUserHeaders(headers)
-
-	var mu sync.Mutex
-	var allTools []mcp.Tool
-
+	before := len(result.Tools)
 	if isStateless {
-		g, gCtx := errgroup.WithContext(ctx)
-		for _, srv := range matching {
-			g.Go(func() error {
-				tools, err := broker.fetchToolsStateless(gCtx, srv, userHeaders)
-				if err != nil {
-					broker.logger.Error("failed to fetch user-specific tools (stateless)", "server", srv.name, "error", err)
-					return nil
-				}
-				broker.logger.Debug("fetched user-specific tools", "server", srv.name, "toolCount", len(tools))
-				mu.Lock()
-				allTools = append(allTools, tools...)
-				mu.Unlock()
-				return nil
-			})
-		}
-		_ = g.Wait()
+		broker.fetchStatelessUserTools(ctx, matching, headers, result)
 	} else {
-		gatewaySessionID := headers.Get(gatewaySessionHeader)
-		if gatewaySessionID == "" {
+		if headers.Get(gatewaySessionHeader) == "" {
 			broker.logger.Error("no gateway session ID for user-specific tool fetch")
 			span.SetStatus(codes.Error, "missing gateway session ID")
 			return
 		}
-		g, gCtx := errgroup.WithContext(ctx)
-		for _, srv := range matching {
-			g.Go(func() error {
-				tools, err := broker.fetchToolsStateful(gCtx, srv, userHeaders, gatewaySessionID)
-				if err != nil {
-					broker.logger.Error("failed to fetch user-specific tools", "server", srv.name, "error", err)
-					return nil
-				}
-				broker.logger.Debug("fetched user-specific tools", "server", srv.name, "toolCount", len(tools))
-				mu.Lock()
-				allTools = append(allTools, tools...)
-				mu.Unlock()
-				return nil
-			})
-		}
-		_ = g.Wait()
+		broker.fetchStatefulUserTools(ctx, matching, headers, result)
 	}
 
-	span.SetAttributes(attribute.Int("mcp.user_specific.tools_fetched", len(allTools)))
-
-	for i := range allTools {
-		result.Tools = append(result.Tools, &allTools[i])
-	}
+	span.SetAttributes(attribute.Int("mcp.user_specific.tools_fetched", len(result.Tools)-before))
 }
 
 func (broker *mcpBrokerImpl) fetchToolsStateful(ctx context.Context, srv userSpecificServer, userHeaders map[string]string, gatewaySessionID string) ([]mcp.Tool, error) {

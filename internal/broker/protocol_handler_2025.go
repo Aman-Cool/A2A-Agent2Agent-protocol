@@ -2,7 +2,6 @@ package broker
 
 import (
 	"context"
-	"log/slog"
 	"net/http"
 
 	"github.com/Kuadrant/mcp-gateway/internal/broker/upstream"
@@ -16,12 +15,11 @@ var _ ProtocolHandler = (*ProtocolHandler2025)(nil)
 // gateway session ID requirement, and no cache aggregation.
 type ProtocolHandler2025 struct {
 	broker *mcpBrokerImpl
-	logger *slog.Logger
 }
 
 // NewProtocolHandler2025 creates a 2025 protocol handler backed by the broker.
-func NewProtocolHandler2025(broker *mcpBrokerImpl, logger *slog.Logger) *ProtocolHandler2025 {
-	return &ProtocolHandler2025{broker: broker, logger: logger}
+func NewProtocolHandler2025(broker *mcpBrokerImpl) *ProtocolHandler2025 {
+	return &ProtocolHandler2025{broker: broker}
 }
 
 // FetchUserSpecificTools performs stateful fetch via the session pool.
