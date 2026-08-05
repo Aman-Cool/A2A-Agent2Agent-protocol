@@ -19,6 +19,8 @@ spec:
           protocol: TCP
         - port: 50051
           protocol: TCP
+        - port: 9090
+          protocol: TCP
   egress:
     - {}
 {{- end }}
