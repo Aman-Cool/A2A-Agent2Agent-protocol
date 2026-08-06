@@ -75,7 +75,7 @@ func TestComputeGatewaySupportedVersions(t *testing.T) {
 	}
 }
 
-func TestRebuildProtocolToolCache(t *testing.T) {
+func TestRebuildProtocolCaches(t *testing.T) {
 	tests := []struct {
 		name               string
 		tools              []upstream.GatewayTool
@@ -156,12 +156,12 @@ func TestRebuildProtocolToolCache(t *testing.T) {
 			wantStatelessCount: 1,
 		},
 		{
-			name: "tool without kuadrant/id",
+			name: "tool without kuadrant/id excluded from all sets",
 			tools: []upstream.GatewayTool{
 				{Tool: mcp.Tool{Name: "tool1", InputSchema: objectSchema, Meta: map[string]any{"other": "value"}}, Handler: upstream.NoopToolHandler},
 			},
 			serverVersions:     map[config.UpstreamMCPID][]string{},
-			wantStatefulCount:  1,
+			wantStatefulCount:  0,
 			wantStatelessCount: 0,
 		},
 	}
@@ -174,99 +174,161 @@ func TestRebuildProtocolToolCache(t *testing.T) {
 			}
 
 			broker.gatewayServer.AddTools(tt.tools...)
-			broker.rebuildProtocolToolCache()
+			broker.rebuildProtocolCaches()
 
 			stateful := broker.statefulTools.Load()
 			if stateful == nil {
 				t.Fatal("statefulTools is nil")
 			}
-			if len(*stateful) != tt.wantStatefulCount {
-				t.Errorf("stateful count: got %d, want %d", len(*stateful), tt.wantStatefulCount)
+			if len(stateful.items) != tt.wantStatefulCount {
+				t.Errorf("stateful count: got %d, want %d", len(stateful.items), tt.wantStatefulCount)
 			}
 
 			stateless := broker.statelessTools.Load()
 			if stateless == nil && tt.wantStatelessCount > 0 {
 				t.Fatal("statelessTools is nil but expected tools")
 			}
-			if stateless != nil && len(*stateless) != tt.wantStatelessCount {
-				t.Errorf("stateless count: got %d, want %d", len(*stateless), tt.wantStatelessCount)
+			if stateless != nil && len(stateless.items) != tt.wantStatelessCount {
+				t.Errorf("stateless count: got %d, want %d", len(stateless.items), tt.wantStatelessCount)
 			}
 		})
 	}
 }
 
-func TestToolsForProtocol(t *testing.T) {
-	broker := NewBroker(slog.Default(), WithDiscoveryToolsEnabled(false)).(*mcpBrokerImpl)
+type namedItem interface {
+	getName() string
+}
 
-	statefulTools := []*mcp.Tool{
-		{Name: "tool1"},
-		{Name: "tool2"},
-	}
-	statelessTools := []*mcp.Tool{
-		{Name: "tool3"},
-	}
+type namedTool struct{ *mcp.Tool }
 
-	broker.statefulTools.Store(&statefulTools)
-	broker.statelessTools.Store(&statelessTools)
+func (n namedTool) getName() string { return n.Name }
 
+type namedPrompt struct{ *mcp.Prompt }
+
+func (n namedPrompt) getName() string { return n.Name }
+
+func testProtocolFilter[T namedItem](t *testing.T, label string, lookup func(http.Header) []T, stateful, stateless []string) {
+	t.Helper()
 	tests := []struct {
 		name      string
 		header    string
-		wantCount int
 		wantNames []string
 	}{
-		{
-			name:      "2026 header returns stateless",
-			header:    "2026-07-28",
-			wantCount: 1,
-			wantNames: []string{"tool3"},
-		},
-		{
-			name:      "no header returns stateful",
-			header:    "",
-			wantCount: 2,
-			wantNames: []string{"tool1", "tool2"},
-		},
-		{
-			name:      "2025 header returns stateful",
-			header:    "2025-11-25",
-			wantCount: 2,
-			wantNames: []string{"tool1", "tool2"},
-		},
+		{"2026 header returns stateless", "2026-07-28", stateless},
+		{"no header returns stateful", "", stateful},
+		{"2025 header returns stateful", "2025-11-25", stateful},
 	}
-
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			headers := http.Header{}
 			if tt.header != "" {
 				headers.Set("Mcp-Protocol-Version", tt.header)
 			}
-
-			got := broker.toolsForProtocol(headers)
-			if len(got) != tt.wantCount {
-				t.Fatalf("got %d tools, want %d", len(got), tt.wantCount)
+			got := lookup(headers)
+			if len(got) != len(tt.wantNames) {
+				t.Fatalf("got %d %s, want %d", len(got), label, len(tt.wantNames))
 			}
-
 			for i, name := range tt.wantNames {
-				if got[i].Name != name {
-					t.Errorf("tool %d: got name %q, want %q", i, got[i].Name, name)
+				if got[i].getName() != name {
+					t.Errorf("%s %d: got name %q, want %q", label, i, got[i].getName(), name)
 				}
 			}
 		})
 	}
-
 	t.Run("returns shallow copy", func(t *testing.T) {
 		headers := http.Header{}
 		headers.Set("Mcp-Protocol-Version", "2026-07-28")
-
-		result1 := broker.toolsForProtocol(headers)
-		originalLen := len(result1)
-
-		_ = append(result1, &mcp.Tool{Name: "appended"})
-
-		result2 := broker.toolsForProtocol(headers)
-		if len(result2) != originalLen {
-			t.Errorf("cache was mutated: got %d tools, want %d", len(result2), originalLen)
+		r1 := lookup(headers)
+		n := len(r1)
+		_ = append(r1, r1[0])
+		r2 := lookup(headers)
+		if len(r2) != n {
+			t.Errorf("cache was mutated: got %d %s, want %d", len(r2), label, n)
 		}
 	})
+}
+
+func TestToolsForProtocol(t *testing.T) {
+	b := NewBroker(slog.Default(), WithDiscoveryToolsEnabled(false)).(*mcpBrokerImpl)
+	sf := protocolCacheEntry[*mcp.Tool]{items: []*mcp.Tool{{Name: "tool1"}, {Name: "tool2"}}}
+	sl := protocolCacheEntry[*mcp.Tool]{items: []*mcp.Tool{{Name: "tool3"}}}
+	b.statefulTools.Store(&sf)
+	b.statelessTools.Store(&sl)
+
+	testProtocolFilter(t, "tools",
+		func(h http.Header) []namedTool {
+			got := b.toolsForProtocol(h)
+			out := make([]namedTool, len(got))
+			for i, tool := range got {
+				out[i] = namedTool{tool}
+			}
+			return out
+		},
+		[]string{"tool1", "tool2"}, []string{"tool3"},
+	)
+}
+
+func TestRebuildProtocolCaches_Prompts(t *testing.T) {
+	t.Run("mixed servers with edge cases", func(t *testing.T) {
+		// 2025-only server, 2026-only server, dual-version server,
+		// prompt without kuadrant/id (defaults to stateful),
+		// prompt with non-string kuadrant/id (dropped from both sets)
+		prompts := []upstream.GatewayPrompt{
+			{Prompt: mcp.Prompt{Name: "p25", Meta: map[string]any{"kuadrant/id": "srv25"}}, Handler: upstream.NoopPromptHandler},
+			{Prompt: mcp.Prompt{Name: "p26", Meta: map[string]any{"kuadrant/id": "srv26"}}, Handler: upstream.NoopPromptHandler},
+			{Prompt: mcp.Prompt{Name: "pdual", Meta: map[string]any{"kuadrant/id": "srvdual"}}, Handler: upstream.NoopPromptHandler},
+			{Prompt: mcp.Prompt{Name: "no_id", Meta: map[string]any{"other": "value"}}, Handler: upstream.NoopPromptHandler},
+			{Prompt: mcp.Prompt{Name: "bad_id", Meta: map[string]any{"kuadrant/id": 123}}, Handler: upstream.NoopPromptHandler},
+		}
+		versions := map[config.UpstreamMCPID][]string{
+			"srv25":   {"2025-11-25"},
+			"srv26":   {"2026-07-28"},
+			"srvdual": {"2025-11-25", "2026-07-28"},
+		}
+
+		broker := NewBroker(slog.Default(), WithDiscoveryToolsEnabled(false)).(*mcpBrokerImpl)
+		for id, v := range versions {
+			broker.serverVersions.Store(id, v)
+		}
+		broker.gatewayServer.AddPrompts(prompts...)
+		broker.rebuildProtocolCaches()
+
+		stateful := broker.statefulPrompts.Load()
+		if stateful == nil {
+			t.Fatal("statefulPrompts is nil")
+		}
+		// p25 + pdual = 2 (no_id and bad_id both excluded)
+		if len(stateful.items) != 2 {
+			t.Errorf("stateful count: got %d, want 2", len(stateful.items))
+		}
+
+		stateless := broker.statelessPrompts.Load()
+		if stateless == nil {
+			t.Fatal("statelessPrompts is nil")
+		}
+		// p26 + pdual = 2
+		if len(stateless.items) != 2 {
+			t.Errorf("stateless count: got %d, want 2", len(stateless.items))
+		}
+	})
+}
+
+func TestPromptsForProtocol(t *testing.T) {
+	b := NewBroker(slog.Default(), WithDiscoveryToolsEnabled(false)).(*mcpBrokerImpl)
+	sf := protocolCacheEntry[*mcp.Prompt]{items: []*mcp.Prompt{{Name: "prompt1"}, {Name: "prompt2"}}}
+	sl := protocolCacheEntry[*mcp.Prompt]{items: []*mcp.Prompt{{Name: "prompt3"}}}
+	b.statefulPrompts.Store(&sf)
+	b.statelessPrompts.Store(&sl)
+
+	testProtocolFilter(t, "prompts",
+		func(h http.Header) []namedPrompt {
+			got := b.promptsForProtocol(h)
+			out := make([]namedPrompt, len(got))
+			for i, p := range got {
+				out[i] = namedPrompt{p}
+			}
+			return out
+		},
+		[]string{"prompt1", "prompt2"}, []string{"prompt3"},
+	)
 }

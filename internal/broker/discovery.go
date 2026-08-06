@@ -11,9 +11,7 @@ import (
 	"time"
 
 	"github.com/Kuadrant/mcp-gateway/internal/broker/upstream"
-	"github.com/Kuadrant/mcp-gateway/internal/config"
 	internaljwt "github.com/Kuadrant/mcp-gateway/internal/jwt"
-	"github.com/Kuadrant/mcp-gateway/internal/protocol"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -330,51 +328,17 @@ func (m *mcpBrokerImpl) sendToolsListChanged(sessionID string) {
 }
 
 // getVisibleToolNames returns a set of tool names visible to the current request,
-// after applying protocol version, auth and virtual server filtering. caller must hold mcpLock.
+// after applying protocol version, auth and virtual server filtering.
 func (m *mcpBrokerImpl) getVisibleToolNames(headers http.Header) map[string]struct{} {
-	allTools := m.collectAllPrefixedTools()
+	tools := m.toolsForProtocol(headers)
+	tools = m.applyAuthorizedCapabilitiesFilter(headers, tools)
+	tools = m.applyVirtualServerFilter(headers, tools)
 
-	// filter by client protocol version
-	clientVersion := protocol.Version2025
-	if headers.Get(protocolVersionHeader) == protocol.Version2026 {
-		clientVersion = protocol.Version2026
-	}
-	var protoFiltered []*mcp.Tool
-	for _, t := range allTools {
-		if idVal, ok := t.Meta["kuadrant/id"]; ok {
-			if id, ok := idVal.(string); ok && m.ServerSupportsVersion(config.UpstreamMCPID(id), clientVersion) {
-				protoFiltered = append(protoFiltered, t)
-			}
-		}
-	}
-
-	filtered := m.applyAuthorizedCapabilitiesFilter(headers, protoFiltered)
-	filtered = m.applyVirtualServerFilter(headers, filtered)
-
-	visible := make(map[string]struct{}, len(filtered))
-	for _, t := range filtered {
+	visible := make(map[string]struct{}, len(tools))
+	for _, t := range tools {
 		visible[t.Name] = struct{}{}
 	}
 	return visible
-}
-
-// collectAllPrefixedTools builds the full list of prefixed tools across all servers.
-// caller must hold mcpLock.
-func (m *mcpBrokerImpl) collectAllPrefixedTools() []*mcp.Tool {
-	var all []*mcp.Tool
-	for _, manager := range m.mcpServers {
-		cfg := manager.Config()
-		prefix := cfg.Prefix
-		serverID := string(cfg.ID())
-		for _, tool := range manager.GetManagedTools() {
-			t := &mcp.Tool{Name: prefix + tool.Name}
-			t.Meta = mcp.Meta{
-				"kuadrant/id": serverID,
-			}
-			all = append(all, t)
-		}
-	}
-	return all
 }
 
 // marshalToolResult marshals v to JSON and returns it as a tool result.

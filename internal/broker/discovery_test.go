@@ -25,7 +25,17 @@ func populateTestVersions(b *mcpBrokerImpl) {
 	for _, mgr := range b.mcpServers {
 		cfg := mgr.Config()
 		b.serverVersions.Store(cfg.ID(), []string{protocol.Version2025})
+		for _, t := range mgr.GetManagedTools() {
+			tool := t
+			tool.Name = cfg.Prefix + tool.Name
+			tool.Meta = mcp.Meta{"kuadrant/id": string(cfg.ID())}
+			if tool.InputSchema == nil {
+				tool.InputSchema = map[string]any{"type": "object"}
+			}
+			b.gatewayServer.AddTools(upstream.GatewayTool{Tool: tool, Handler: upstream.NoopToolHandler})
+		}
 	}
+	b.rebuildProtocolCaches()
 }
 
 func createTestManagerWithMeta(t *testing.T, serverName, prefix string, tools []mcp.Tool, category []string, hint string) upstream.ActiveMCPServer {

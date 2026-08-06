@@ -15,6 +15,7 @@ import (
 	"github.com/Kuadrant/mcp-gateway/internal/broker/upstream"
 	"github.com/Kuadrant/mcp-gateway/internal/config"
 	internaljwt "github.com/Kuadrant/mcp-gateway/internal/jwt"
+	"github.com/Kuadrant/mcp-gateway/internal/protocol"
 	"github.com/Kuadrant/mcp-gateway/internal/routing"
 	"github.com/Kuadrant/mcp-gateway/internal/session"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -153,13 +154,23 @@ type mcpBrokerImpl struct {
 	// serverVersions maps upstream server ID to supported protocol versions
 	serverVersions sync.Map // map[config.UpstreamMCPID][]string
 
-	// statefulTools and statelessTools cache pre-filtered tool sets for each protocol version
-	statefulTools  atomic.Pointer[[]*mcp.Tool]
-	statelessTools atomic.Pointer[[]*mcp.Tool]
+	// statefulTools and statelessTools cache pre-filtered tool sets and their
+	// contributing server IDs for each protocol version
+	statefulTools  atomic.Pointer[protocolCacheEntry[*mcp.Tool]]
+	statelessTools atomic.Pointer[protocolCacheEntry[*mcp.Tool]]
+
+	// statefulPrompts and statelessPrompts cache pre-filtered prompt sets and their
+	// contributing server IDs for each protocol version
+	statefulPrompts  atomic.Pointer[protocolCacheEntry[*mcp.Prompt]]
+	statelessPrompts atomic.Pointer[protocolCacheEntry[*mcp.Prompt]]
 
 	// statelessTransports caches TLS transports for stateless user-specific fetches,
 	// keyed by gatewayCACert+serverCACert. avoids rebuilding cert pools per request.
 	statelessTransports sync.Map // map[string]http.RoundTripper
+
+	// protocol handlers encapsulate version-specific broker behavior
+	handler2025 ProtocolHandler
+	handler2026 ProtocolHandler
 }
 
 // this ensures that mcpBrokerImpl implements the MCPBroker interface
@@ -267,6 +278,9 @@ func NewBroker(logger *slog.Logger, opts ...Option) MCPBroker {
 		option(mcpBkr)
 	}
 
+	mcpBkr.handler2025 = NewProtocolHandler2025(mcpBkr)
+	mcpBkr.handler2026 = NewProtocolHandler2026(mcpBkr)
+
 	if mcpBkr.discovery.enabled {
 		mcpBkr.scopeStore = newScopeStore(defaultScopeTTL, defaultScopeMaxSize)
 	}
@@ -311,7 +325,7 @@ func NewBroker(logger *slog.Logger, opts ...Option) MCPBroker {
 		mcpBkr.mcpLock.RLock()
 		defer mcpBkr.mcpLock.RUnlock()
 		mcpBkr.refreshRoutingTable()
-		mcpBkr.rebuildProtocolToolCache()
+		mcpBkr.rebuildProtocolCaches()
 	}
 	srv.AddSendingMiddleware(mcpBkr.gatewayServer.notifyTargetMiddleware())
 
@@ -371,7 +385,11 @@ func (m *mcpBrokerImpl) tracingMiddleware() mcp.Middleware {
 	}
 }
 
-// filteringMiddleware replaces the old AfterListTools/AfterListPrompts hooks
+// filteringMiddleware is a post-processing middleware: it calls next first
+// to let the SDK handler build the full result, then filters and enriches it
+// (protocol filtering, user-specific tools, auth, cache aggregation).
+// middleware ordered before this in AddReceivingMiddleware sees the filtered
+// result; middleware ordered after sees the raw SDK result.
 func (m *mcpBrokerImpl) filteringMiddleware() mcp.Middleware {
 	return func(next mcp.MethodHandler) mcp.MethodHandler {
 		return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
@@ -407,6 +425,15 @@ func (m *mcpBrokerImpl) filteringMiddleware() mcp.Middleware {
 					sessionID = s.ID()
 				}
 				m.FetchUserSpecificTools(ctx, headers, toolsResult)
+
+				// collect cache metadata before FilterTools strips kuadrant/id
+				if headers.Get(protocolVersionHeader) == protocol.Version2026 {
+					contributing := m.collectToolsCacheMetadata()
+					ttl, scope := m.handler2026.AggregateCache(contributing)
+					toolsResult.TTLMs = ttl
+					toolsResult.CacheScope = scope
+				}
+
 				m.FilterTools(ctx, headers, sessionID, toolsResult)
 
 			case "prompts/list":
@@ -418,6 +445,17 @@ func (m *mcpBrokerImpl) filteringMiddleware() mcp.Middleware {
 				if extra := req.GetExtra(); extra != nil {
 					headers = extra.Header
 				}
+
+				// filter by protocol version before auth filtering
+				promptsResult.Prompts = m.promptsForProtocol(headers)
+
+				if headers.Get(protocolVersionHeader) == protocol.Version2026 {
+					contributing := m.collectPromptsCacheMetadata()
+					ttl, scope := m.handler2026.AggregateCache(contributing)
+					promptsResult.TTLMs = ttl
+					promptsResult.CacheScope = scope
+				}
+
 				m.FilterPrompts(ctx, headers, promptsResult)
 			}
 
@@ -524,7 +562,9 @@ func (m *mcpBrokerImpl) startManagers(ctx context.Context, servers []*config.MCP
 
 	m.syncTagsTools(ctx, servers)
 
-	// precompute userSpecificList servers for FetchUserSpecificTools
+	// precompute CRD-declared userSpecificList servers for FetchUserSpecificTools.
+	// 2026 cache-metadata-driven servers are checked at request time in
+	// FetchUserSpecificTools to avoid racing with managers still connecting.
 	m.userSpecificServers = nil
 	for _, srv := range servers {
 		if srv.UserSpecificList {
