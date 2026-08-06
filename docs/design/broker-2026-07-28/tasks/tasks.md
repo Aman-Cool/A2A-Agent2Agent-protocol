@@ -76,14 +76,14 @@ type cacheMetadata struct {
 - Add `toolsCacheMeta` and `promptsCacheMeta` fields to `MCPServer`, guarded by `clientMu`
 - After `ListTools`, store metadata in `toolsCacheMeta`; after `ListPrompts`, store in `promptsCacheMeta`
 - Set `UserSpecificList` from the CRD config when constructing the upstream, so `AggregateCache` has all scope signals in one struct
-- Defaults: `TTLMs: 0`, `CacheScope: "public"`, `UserSpecificList: false` (2025 backends produce these via SDK defaults)
+- Defaults: `TTLMs: 0`, `CacheScope: ""`, `UserSpecificList: false` (CacheScope populated to `"public"` after first upstream list call via SDK defaults)
 - Add `ToolsCacheMetadata()` and `PromptsCacheMetadata()` to the `MCP` and `ActiveMCPServer` interfaces
 
 **Acceptance criteria:**
 - [x] `cacheMetadata` struct defined
 - [x] `MCPServer` stores metadata per result type (`toolsCacheMeta`, `promptsCacheMeta`)
 - [x] `MCP` and `ActiveMCPServer` interfaces expose `ToolsCacheMetadata()` and `PromptsCacheMetadata()`
-- [x] Defaults are `TTLMs:0`, `CacheScope:"public"` before first list
+- [x] Defaults are `TTLMs:0`, `CacheScope:""` before first list (populated to `"public"` after first upstream list call)
 - [x] Unit test: tools and prompts metadata populated independently from their list results
 - [x] `make lint && make test-unit` passes
 
@@ -132,17 +132,17 @@ Implement the 2026 protocol handler:
 
 - `FetchUserSpecificTools`: stateless connect-list-close (moves logic from `broker.FetchUserSpecificTools` 2026 branch)
 - `ShouldFetchFresh`: returns `true` when `meta.CacheScope == "private"` or `meta.TTLMs == 0`
-- `AggregateCache`: `min(non-zero TTLMs)` across contributing upstreams; `"private"` if any upstream is private or any has `userSpecificList`; `"public"` otherwise. If all TTLMs are 0, aggregate is 0
+- `AggregateCache`: `min(non-zero TTLMs)` across contributing upstreams; `"private"` if any upstream is private, has `userSpecificList`, or has `TTLMs == 0`; `"public"` otherwise
 - `StartNotificationWatcher`: placeholder (wired in Task 6)
 
 **Acceptance criteria:**
-- [ ] `ProtocolHandler2026` implements all 4 methods
-- [ ] `ShouldFetchFresh` triggers on `cacheScope:"private"` or `ttlMs:0`
-- [ ] `AggregateCache` computes correct `min(non-zero ttlMs)`
-- [ ] `AggregateCache` returns `"private"` when any upstream is private or has `userSpecificList`
-- [ ] `AggregateCache` returns `(0, "public")` when all TTLMs are 0 and none are private
-- [ ] Unit tests cover: all-public, mixed, all-private, ttlMs-zero, single server, empty input
-- [ ] `make lint && make test-unit` passes
+- [x] `ProtocolHandler2026` implements all 4 methods
+- [x] `ShouldFetchFresh` triggers on `cacheScope:"private"` or `ttlMs:0`
+- [x] `AggregateCache` computes correct `min(non-zero ttlMs)`
+- [x] `AggregateCache` returns `"private"` when any upstream is private or has `userSpecificList`
+- [x] `AggregateCache` returns `(0, "private")` when any TTLMs is 0 — zero TTL forces uncacheable/private
+- [x] Unit tests cover: all-public, mixed, all-private, ttlMs-zero, single server, empty input
+- [x] `make lint && make test-unit` passes
 
 **Verification:** `make lint && make test-unit`
 
