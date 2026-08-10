@@ -58,7 +58,7 @@ type cachedUserSession struct {
 func (broker *mcpBrokerImpl) FetchUserSpecificTools(ctx context.Context, headers http.Header, result *mcp.ListToolsResult) {
 	clientVersion := protocol.Version2025
 	handler := broker.handler2025
-	if headers.Get(protocolVersionHeader) == protocol.Version2026 {
+	if isStatelessProtocol(headers) {
 		clientVersion = protocol.Version2026
 		handler = broker.handler2026
 	}

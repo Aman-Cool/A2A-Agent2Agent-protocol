@@ -15,7 +15,6 @@ import (
 	"github.com/Kuadrant/mcp-gateway/internal/broker/upstream"
 	"github.com/Kuadrant/mcp-gateway/internal/config"
 	internaljwt "github.com/Kuadrant/mcp-gateway/internal/jwt"
-	"github.com/Kuadrant/mcp-gateway/internal/protocol"
 	"github.com/Kuadrant/mcp-gateway/internal/routing"
 	"github.com/Kuadrant/mcp-gateway/internal/session"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -416,9 +415,10 @@ func (m *mcpBrokerImpl) filteringMiddleware() mcp.Middleware {
 				if extra := req.GetExtra(); extra != nil {
 					headers = extra.Header
 				}
+				isStateless := isStatelessProtocol(headers)
 
 				// filter by protocol version before user-specific fetches
-				toolsResult.Tools = m.toolsForProtocol(headers)
+				toolsResult.Tools = m.toolsForProtocol(isStateless)
 
 				var sessionID string
 				if s := req.GetSession(); s != nil {
@@ -427,7 +427,7 @@ func (m *mcpBrokerImpl) filteringMiddleware() mcp.Middleware {
 				m.FetchUserSpecificTools(ctx, headers, toolsResult)
 
 				// collect cache metadata before FilterTools strips kuadrant/id
-				if headers.Get(protocolVersionHeader) == protocol.Version2026 {
+				if isStateless {
 					contributing := m.collectToolsCacheMetadata()
 					ttl, scope := m.handler2026.AggregateCache(contributing)
 					toolsResult.TTLMs = ttl
@@ -445,11 +445,12 @@ func (m *mcpBrokerImpl) filteringMiddleware() mcp.Middleware {
 				if extra := req.GetExtra(); extra != nil {
 					headers = extra.Header
 				}
+				isStateless := isStatelessProtocol(headers)
 
 				// filter by protocol version before auth filtering
-				promptsResult.Prompts = m.promptsForProtocol(headers)
+				promptsResult.Prompts = m.promptsForProtocol(isStateless)
 
-				if headers.Get(protocolVersionHeader) == protocol.Version2026 {
+				if isStateless {
 					contributing := m.collectPromptsCacheMetadata()
 					ttl, scope := m.handler2026.AggregateCache(contributing)
 					promptsResult.TTLMs = ttl

@@ -330,7 +330,8 @@ func (m *mcpBrokerImpl) sendToolsListChanged(sessionID string) {
 // getVisibleToolNames returns a set of tool names visible to the current request,
 // after applying protocol version, auth and virtual server filtering.
 func (m *mcpBrokerImpl) getVisibleToolNames(headers http.Header) map[string]struct{} {
-	tools := m.toolsForProtocol(headers)
+	isStateless := isStatelessProtocol(headers)
+	tools := m.toolsForProtocol(isStateless)
 	tools = m.applyAuthorizedCapabilitiesFilter(headers, tools)
 	tools = m.applyVirtualServerFilter(headers, tools)
 
