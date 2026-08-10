@@ -78,7 +78,7 @@ stringData:
 | Field | Required | Description |
 |-------|----------|-------------|
 | `url` | yes | Guardrails server endpoint |
-| `configIDs` | no | Default config IDs for all servers. Empty for per-server-only model |
+| `configIDs` | no | Default config IDs applied to all servers |
 | `model` | yes | Model identifier for the guardrails check |
 | `failMode` | no | `deny` (default) or `allow` |
 
@@ -155,13 +155,15 @@ If the referenced Secret is missing while the annotation is set:
 
 #### Resolution Order
 
-One guardrails server per gateway. Per-server config IDs are additive — they cannot remove gateway defaults. This lets gateway admins enforce org-wide policies via the Secret's `configIDs` while teams add domain-specific rails for their servers.
+One guardrails server per gateway. Per-server config IDs are additive — they cannot remove global guardrails policies. This lets gateway admins enforce org-wide policies via the Secret's `configIDs` while teams add domain-specific per-server guardrails policies for their servers.
 
-| Gateway `guardrails-ref` | Server `guardrails-config-ids` | Effective Behavior |
+When merging, global guardrails policy config IDs are listed first, followed by per-server guardrails policy config IDs. This ensures global policies evaluate before server-specific ones.
+
+| Global Guardrails Policy (`guardrails-ref`) | Per-Server Guardrails Policy (`guardrails-config-ids`) | Effective Behavior |
 |-------------------------|------------------------------|--------------------|
 | Not set | Not set | No guardrails |
 | Set (Secret has default IDs) | Not set | Gateway defaults applied |
-| Set (Secret has empty IDs) | Not set | No check — per-server-only model |
+| Set (Secret has empty IDs) | Not set | No check |
 | Set (Secret has default IDs) | Set | Gateway defaults + server IDs merged |
 | Set (Secret has no default IDs) | Set | Server IDs only |
 | Not set | Set | **NotReady** — server removed |

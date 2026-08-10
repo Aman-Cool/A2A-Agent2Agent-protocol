@@ -11,11 +11,11 @@ tags: Happy,Guardrails
 
 ### [Happy,Guardrails] Global guardrails blocks a dangerous tool call
 
-- When an MCPGatewayExtension is configured with `guardrailsRef` and a client makes a `tools/call` with arguments that trigger a block, the gateway should return a JSON-RPC error with a 403 status. The request should never reach the backend MCP server.
+- When an MCPGatewayExtension is annotated with `mcp.kuadrant.io/guardrails-ref` and a client makes a `tools/call` with arguments that trigger a block, the gateway should return a JSON-RPC error with a 403 status. The request should never reach the backend MCP server.
 
 ### [Happy,Guardrails] Global guardrails allows a safe tool call
 
-- When an MCPGatewayExtension is configured with `guardrailsRef` and a client makes a `tools/call` with arguments that pass the guardrails check, the request should be routed to the backend and the tool result returned.
+- When an MCPGatewayExtension is annotated with `mcp.kuadrant.io/guardrails-ref` and a client makes a `tools/call` with arguments that pass the guardrails check, the request should be routed to the backend and the tool result returned.
 
 ### [Happy,Guardrails] Per-server guardrailsConfigIDs merged with global defaults
 

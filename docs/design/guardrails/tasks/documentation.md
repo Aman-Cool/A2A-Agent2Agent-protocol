@@ -16,13 +16,12 @@ When MCP servers interact with sensitive systems, a platform engineer deploying 
 
 ### When I want per-server guardrails policies
 
-When servers have different risk profiles, a platform engineer or MCP server developer managing multiple servers wants to add server-level config IDs alongside the global policy so that each server's guardrails match its capabilities.
+When servers have different risk profiles, a platform engineer or MCP server developer managing multiple servers wants to add per-server guardrails policy config IDs alongside the global guardrails policy so that each server's guardrails match its capabilities.
 
 **Cover:**
 - Setting `mcp.kuadrant.io/guardrails-config-ids` annotation on MCPServerRegistration
 - This annotation is an extension only — it requires `mcp.kuadrant.io/guardrails-ref` on the MCPGatewayExtension. Without a gateway-level guardrails config, the server is set to NotReady
-- Additive behavior: per-server IDs are merged with gateway defaults, they cannot remove org-wide policies
-- Per-server-only model: gateway annotation with empty `configIDs` in Secret, servers supply their own
+- Additive behavior: per-server guardrails policy IDs are merged with global guardrails policy defaults (global first, then per-server), they cannot remove org-wide policies
 - YAML examples showing combined configuration
 
 ### When I want to understand fail modes
