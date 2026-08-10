@@ -7,6 +7,7 @@ import (
 	"time"
 
 	internaljwt "github.com/Kuadrant/mcp-gateway/internal/jwt"
+	"github.com/Kuadrant/mcp-gateway/internal/protocol"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -21,6 +22,12 @@ import (
 // protocolVersionHeader is the spec's MCP-Protocol-Version header in the
 // canonical form http.Header.Get expects.
 const protocolVersionHeader = "Mcp-Protocol-Version"
+
+// isStatelessProtocol returns true when the request's protocol version
+// indicates a stateless (2026+) client.
+func isStatelessProtocol(headers http.Header) bool {
+	return headers.Get(protocolVersionHeader) == protocol.Version2026
+}
 
 // defaultProtocolVersion is assumed when the client omits the
 // MCP-Protocol-Version header, matching the SDK's default. deliberately the
