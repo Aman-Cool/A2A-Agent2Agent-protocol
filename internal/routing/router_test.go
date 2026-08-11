@@ -1693,6 +1693,314 @@ func TestHandleResourceRead_UnrecognizedPrefix(t *testing.T) {
 	require.Contains(t, decision.Error.JSONRPCErr, "Resource not found")
 }
 
+// TestHandleResourceRead_EmptyURI verifies that missing/empty URI param is rejected.
+func TestHandleResourceRead_EmptyURI(t *testing.T) {
+	router, _ := newTestRouter(t, nil, map[string]string{}, map[string]string{})
+
+	data := &MCPRequest{
+		ID:      ptr.To(0),
+		JSONRPC: "2.0",
+		Method:  "resources/read",
+		Params: map[string]any{
+			"uri": "",
+		},
+	}
+
+	decision := router.RouteRequest(context.Background(), &Request{Parsed: data})
+	require.NotNil(t, decision.Error)
+	require.Equal(t, 400, decision.Error.StatusCode)
+}
+
+// TestHandleResourceRead_MalformedURI verifies URI without scheme is treated as unroutable.
+func TestHandleResourceRead_MalformedURI(t *testing.T) {
+	serverConfigs := []*config.MCPServer{
+		{
+			Name:     "dummy",
+			URL:      "http://localhost:8080/mcp",
+			Prefix:   "s_",
+			State:    "Enabled",
+			Hostname: "localhost",
+		},
+	}
+	router, validToken := newTestRouter(t, serverConfigs, map[string]string{}, map[string]string{})
+	// No resource prefixes registered, so malformed URI won't route
+
+	data := &MCPRequest{
+		ID:      ptr.To(0),
+		JSONRPC: "2.0",
+		Method:  "resources/read",
+		Params: map[string]any{
+			"uri": "s_no_scheme_here",
+		},
+		Headers: map[string]string{
+			"mcp-session-id": validToken,
+		},
+	}
+
+	decision := router.RouteRequest(context.Background(), &Request{Parsed: data})
+	// Without scheme, URI can't be parsed, so resource not found
+	require.NotNil(t, decision.Error)
+}
+
+// TestHandleResourceRead_URIWithQueryParams verifies URI with query parameters is
+// handled correctly (preserved in rewrite).
+func TestHandleResourceRead_URIWithQueryParams(t *testing.T) {
+	serverConfigs := []*config.MCPServer{
+		{
+			Name:     "dummy",
+			URL:      "http://localhost:8080/mcp",
+			Prefix:   "s_",
+			State:    "Enabled",
+			Hostname: "dummy.mcp.local",
+		},
+	}
+	router, validToken := newTestRouter(t, serverConfigs, map[string]string{}, map[string]string{})
+	router.Table = func() RoutingTable {
+		return NewTableBuilder().
+			AddResourcePrefix("s_", &ServerRoute{
+				Name:   "dummy",
+				Host:   "dummy.mcp.local",
+				Prefix: "s_",
+				Path:   "/",
+				URL:    "http://localhost:8080/mcp",
+			}).
+			Build()
+	}
+
+	// Pre-populate session cache to avoid initialization
+	sessionAdded, err := router.SessionCache.AddSession(context.Background(), validToken, "dummy", "mock-session", 0)
+	require.NoError(t, err)
+	require.True(t, sessionAdded)
+
+	data := &MCPRequest{
+		ID:      ptr.To(0),
+		JSONRPC: "2.0",
+		Method:  "resources/read",
+		Params: map[string]any{
+			"uri": "ui://s_template.html?version=1&name=test",
+		},
+		Headers: map[string]string{
+			"mcp-session-id": validToken,
+		},
+	}
+
+	decision := router.RouteRequest(context.Background(), &Request{Parsed: data})
+	require.Nil(t, decision.Error)
+	require.Equal(t, "ui://template.html?version=1&name=test", decision.SetHeaders["x-mcp-resourceuri"])
+}
+
+// TestHandleResourceRead_EmptyPrefix verifies that resources work when prefix is empty.
+func TestHandleResourceRead_EmptyPrefix(t *testing.T) {
+	serverConfigs := []*config.MCPServer{
+		{
+			Name:     "noprefixserver",
+			URL:      "http://localhost:8080/mcp",
+			Prefix:   "",
+			State:    "Enabled",
+			Hostname: "noprefixserver.mcp.local",
+		},
+	}
+	router, validToken := newTestRouter(t, serverConfigs, map[string]string{}, map[string]string{})
+	router.Table = func() RoutingTable {
+		return NewTableBuilder().
+			AddResourcePrefix("", &ServerRoute{
+				Name:   "noprefixserver",
+				Host:   "noprefixserver.mcp.local",
+				Prefix: "",
+				Path:   "/",
+				URL:    "http://localhost:8080/mcp",
+			}).
+			Build()
+	}
+
+	sessionAdded, err := router.SessionCache.AddSession(context.Background(), validToken, "noprefixserver", "mock-session", 0)
+	require.NoError(t, err)
+	require.True(t, sessionAdded)
+
+	data := &MCPRequest{
+		ID:      ptr.To(0),
+		JSONRPC: "2.0",
+		Method:  "resources/read",
+		Params: map[string]any{
+			"uri": "ui://template.html",
+		},
+		Headers: map[string]string{
+			"mcp-session-id": validToken,
+		},
+	}
+
+	decision := router.RouteRequest(context.Background(), &Request{Parsed: data})
+	require.Nil(t, decision.Error)
+	require.Equal(t, "ui://template.html", decision.SetHeaders["x-mcp-resourceuri"])
+	require.Equal(t, "noprefixserver", decision.SetHeaders["x-mcp-servername"])
+}
+
+// TestHandleResourceRead_OverlappingPrefixes verifies longest-match prefix selection.
+// When both "app_" and "app_admin_" prefixes match, the longer one is chosen.
+func TestHandleResourceRead_OverlappingPrefixes(t *testing.T) {
+	serverConfigs := []*config.MCPServer{
+		{
+			Name:     "app_server",
+			URL:      "http://localhost:8080/mcp",
+			Prefix:   "app_",
+			State:    "Enabled",
+			Hostname: "app.mcp.local",
+		},
+		{
+			Name:     "app_admin_server",
+			URL:      "http://localhost:8081/mcp",
+			Prefix:   "app_admin_",
+			State:    "Enabled",
+			Hostname: "app_admin.mcp.local",
+		},
+	}
+	router, validToken := newTestRouter(t, serverConfigs, map[string]string{}, map[string]string{})
+	router.Table = func() RoutingTable {
+		return NewTableBuilder().
+			AddResourcePrefix("app_", &ServerRoute{
+				Name:   "app_server",
+				Host:   "app.mcp.local",
+				Prefix: "app_",
+				Path:   "/",
+				URL:    "http://localhost:8080/mcp",
+			}).
+			AddResourcePrefix("app_admin_", &ServerRoute{
+				Name:   "app_admin_server",
+				Host:   "app_admin.mcp.local",
+				Prefix: "app_admin_",
+				Path:   "/",
+				URL:    "http://localhost:8081/mcp",
+			}).
+			Build()
+	}
+
+	sessionAdded, err := router.SessionCache.AddSession(context.Background(), validToken, "app_admin_server", "mock-session", 0)
+	require.NoError(t, err)
+	require.True(t, sessionAdded)
+
+	// URI matches both prefixes; longest match should win
+	data := &MCPRequest{
+		ID:      ptr.To(0),
+		JSONRPC: "2.0",
+		Method:  "resources/read",
+		Params: map[string]any{
+			"uri": "ui://app_admin_dashboard.html",
+		},
+		Headers: map[string]string{
+			"mcp-session-id": validToken,
+		},
+	}
+
+	decision := router.RouteRequest(context.Background(), &Request{Parsed: data})
+	require.Nil(t, decision.Error)
+	require.Equal(t, "app_admin_server", decision.SetHeaders["x-mcp-servername"])
+	require.Equal(t, "ui://dashboard.html", decision.SetHeaders["x-mcp-resourceuri"])
+}
+
+// TestHandleResourceRead_SingleCharPrefix verifies single-character prefixes work.
+func TestHandleResourceRead_SingleCharPrefix(t *testing.T) {
+	serverConfigs := []*config.MCPServer{
+		{
+			Name:     "dummy",
+			URL:      "http://localhost:8080/mcp",
+			Prefix:   "a",
+			State:    "Enabled",
+			Hostname: "dummy.mcp.local",
+		},
+	}
+	router, validToken := newTestRouter(t, serverConfigs, map[string]string{}, map[string]string{})
+	router.Table = func() RoutingTable {
+		return NewTableBuilder().
+			AddResourcePrefix("a", &ServerRoute{
+				Name:   "dummy",
+				Host:   "dummy.mcp.local",
+				Prefix: "a",
+				Path:   "/",
+				URL:    "http://localhost:8080/mcp",
+			}).
+			Build()
+	}
+
+	sessionAdded, err := router.SessionCache.AddSession(context.Background(), validToken, "dummy", "mock-session", 0)
+	require.NoError(t, err)
+	require.True(t, sessionAdded)
+
+	data := &MCPRequest{
+		ID:      ptr.To(0),
+		JSONRPC: "2.0",
+		Method:  "resources/read",
+		Params: map[string]any{
+			"uri": "ui://afile.html",
+		},
+		Headers: map[string]string{
+			"mcp-session-id": validToken,
+		},
+	}
+
+	decision := router.RouteRequest(context.Background(), &Request{Parsed: data})
+	require.Nil(t, decision.Error)
+	require.Equal(t, "ui://file.html", decision.SetHeaders["x-mcp-resourceuri"])
+	require.Equal(t, "dummy", decision.SetHeaders["x-mcp-servername"])
+}
+
+// TestHandleResourceRead_MissingSession verifies that requests without session fail.
+func TestHandleResourceRead_MissingSession(t *testing.T) {
+	serverConfigs := []*config.MCPServer{
+		{
+			Name:     "dummy",
+			URL:      "http://localhost:8080/mcp",
+			Prefix:   "s_",
+			State:    "Enabled",
+			Hostname: "dummy.mcp.local",
+		},
+	}
+	router, _ := newTestRouter(t, serverConfigs, map[string]string{}, map[string]string{})
+	router.Table = func() RoutingTable {
+		return NewTableBuilder().
+			AddResourcePrefix("s_", &ServerRoute{
+				Name:   "dummy",
+				Host:   "dummy.mcp.local",
+				Prefix: "s_",
+				Path:   "/",
+				URL:    "http://localhost:8080/mcp",
+			}).
+			Build()
+	}
+
+	data := &MCPRequest{
+		ID:      ptr.To(0),
+		JSONRPC: "2.0",
+		Method:  "resources/read",
+		Params: map[string]any{
+			"uri": "ui://s_template.html",
+		},
+		Headers: map[string]string{},
+	}
+
+	decision := router.RouteRequest(context.Background(), &Request{Parsed: data})
+	require.NotNil(t, decision.Error)
+}
+
+// TestHandleResourceRead_InvalidSessionID verifies that invalid session tokens are rejected.
+func TestHandleResourceRead_InvalidSessionID(t *testing.T) {
+	router, _ := newTestRouter(t, nil, map[string]string{}, map[string]string{})
+
+	data := &MCPRequest{
+		ID:      ptr.To(0),
+		JSONRPC: "2.0",
+		Method:  "resources/read",
+		Params: map[string]any{
+			"uri": "ui://s_template.html",
+		},
+		Headers: map[string]string{
+			"mcp-session-id": "invalid.token.here",
+		},
+	}
+
+	decision := router.RouteRequest(context.Background(), &Request{Parsed: data})
+	require.NotNil(t, decision.Error)
+}
+
 func testBearerJWT(sub string) string {
 	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"RS256","typ":"JWT"}`))
 	payload := base64.RawURLEncoding.EncodeToString([]byte(fmt.Sprintf(`{"sub":"%s"}`, sub)))
