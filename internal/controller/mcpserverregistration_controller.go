@@ -138,6 +138,18 @@ func (r *MCPReconciler) Reconcile(ctx context.Context, req reconcile.Request) (r
 	}
 	logger.Info("main reconcile logic starting for", "mcpregistrationname", mcpsr.Name)
 
+	// check for prefix uniqueness within the namespace
+	if err := r.checkPrefixUniqueness(ctx, mcpsr); err != nil {
+		logger.Error(err, "prefix conflict detected", "mcpregistrationname", mcpsr.Name, "prefix", mcpsr.Spec.Prefix)
+		if err := r.updateStatus(ctx, mcpsr, false, "PrefixConflict", err.Error()); err != nil {
+			if apierrors.IsConflict(err) {
+				return ctrl.Result{RequeueAfter: defaultRequeueTime}, nil
+			}
+			return ctrl.Result{}, fmt.Errorf("reconcile failed: status update failed %w", err)
+		}
+		return ctrl.Result{}, nil // don't retry, just mark as conflicted
+	}
+
 	// get the HTTPRoute and gateway(s) this MCPServerRegistration targets
 	targetRoute, err := r.getTargetHTTPRoute(ctx, mcpsr)
 	if err != nil {
@@ -760,6 +772,34 @@ func (r *MCPReconciler) findMCPServerRegistrationsForHTTPRoute(ctx context.Conte
 	}
 
 	return requests
+}
+
+// checkPrefixUniqueness verifies that the prefix is not already used by another
+// MCPServerRegistration in the same namespace. Empty prefixes are allowed and
+// do not conflict with each other. Substring prefixes (e.g., app_ vs app_admin_)
+// are allowed and do not conflict (longest-prefix-match resolves routing).
+func (r *MCPReconciler) checkPrefixUniqueness(ctx context.Context, mcpsr *mcpv1.MCPServerRegistration) error {
+	// empty prefix is always valid (no federation)
+	if mcpsr.Spec.Prefix == "" {
+		return nil
+	}
+
+	list := &mcpv1.MCPServerRegistrationList{}
+	if err := r.List(ctx, list, client.InNamespace(mcpsr.Namespace)); err != nil {
+		return fmt.Errorf("failed to list mcpserverregistrations: %w", err)
+	}
+
+	for _, other := range list.Items {
+		// skip self
+		if other.Name == mcpsr.Name {
+			continue
+		}
+		// only check non-empty prefixes that exactly match
+		if other.Spec.Prefix != "" && other.Spec.Prefix == mcpsr.Spec.Prefix {
+			return fmt.Errorf("prefix %q is already used by mcpserverregistration/%s", mcpsr.Spec.Prefix, other.Name)
+		}
+	}
+	return nil
 }
 
 // validateCACertPEM checks that the data contains at least one valid PEM-encoded
