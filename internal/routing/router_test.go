@@ -1342,6 +1342,7 @@ func TestInitializeMCPServerSession_UpstreamErrorPropagation(t *testing.T) {
 	}
 }
 
+//nolint:dupl
 func TestMCPRequest_PromptName(t *testing.T) {
 	testCases := []struct {
 		Name         string
@@ -1464,6 +1465,7 @@ func TestHandlePromptGet(t *testing.T) {
 	require.NotContains(t, string(decision.BodyMutation), `"name":"s_myprompt"`)
 }
 
+//nolint:dupl
 func TestMCPRequest_ResourceURI(t *testing.T) {
 	testCases := []struct {
 		Name      string
@@ -1803,6 +1805,8 @@ func TestHandleResourceRead_URIWithQueryParams(t *testing.T) {
 }
 
 // TestHandleResourceRead_EmptyPrefix verifies that resources work when prefix is empty.
+//
+//nolint:dupl
 func TestHandleResourceRead_EmptyPrefix(t *testing.T) {
 	serverConfigs := []*config.MCPServer{
 		{
@@ -1903,6 +1907,8 @@ func TestHandleResourceRead_OverlappingPrefixes(t *testing.T) {
 }
 
 // TestHandleResourceRead_SingleCharPrefix verifies single-character prefixes work.
+//
+//nolint:dupl
 func TestHandleResourceRead_SingleCharPrefix(t *testing.T) {
 	serverConfigs := []*config.MCPServer{
 		{
