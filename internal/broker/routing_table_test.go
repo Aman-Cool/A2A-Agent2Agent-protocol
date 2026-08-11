@@ -35,6 +35,12 @@ func (m *resourceCapableMockServer) GetServedManagedPrompt(string) *mcp.Prompt {
 func (m *resourceCapableMockServer) Config() config.MCPServer                  { return m.cfg }
 func (m *resourceCapableMockServer) SupportedVersions() []string               { return nil }
 func (m *resourceCapableMockServer) SupportsVersion(string) bool               { return false }
+func (m *resourceCapableMockServer) ToolsCacheMetadata() upstream.CacheMetadata {
+	return upstream.CacheMetadata{}
+}
+func (m *resourceCapableMockServer) PromptsCacheMetadata() upstream.CacheMetadata {
+	return upstream.CacheMetadata{}
+}
 func (m *resourceCapableMockServer) SupportsResources() bool                   { return m.supportsResources }
 func (m *resourceCapableMockServer) ListResources(context.Context) (*mcp.ListResourcesResult, error) {
 	return nil, nil
