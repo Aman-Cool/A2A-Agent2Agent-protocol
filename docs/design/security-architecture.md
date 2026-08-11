@@ -58,6 +58,7 @@ MCP Client
 | Gateway → Router (ext_proc) | Request headers, buffered body |
 | Gateway → Upstream MCP Server | All client headers, MCP JSON-RPC body |
 | Gateway → Broker | MCP JSON-RPC body, gateway session JWT, `x-mcp-authorized` signed header |
+| Broker → Upstream (per-user fetch) | Client `Authorization` header; gateway-scoped credentials (`cookie`, `proxy-authorization`) stripped |
 | Upstream MCP Server → Client | MCP JSON-RPC response body (streamed as-is), backend session IDs (rewritten to gateway session IDs) |
 
 ### Information shared with upstream MCP servers (model providers)
@@ -93,6 +94,8 @@ The gateway is NOT responsible for:
 - The controller (`internal/controller/`) scopes generated Secrets to the operator namespace and sets owner references for garbage collection. The controller's ClusterRole grants cluster-wide secrets access, but the informer cache is filtered by label (`mcp.kuadrant.io/secret: "true"`) to limit the working set
 - Routing headers set by the router (tool name, session ID, server name) are derived from parsed JSON-RPC bodies or gateway-issued JWTs, not from raw client input. Client-supplied headers are proxied through to upstream backends as-is — header filtering is the responsibility of the gateway HTTPRoute configuration and AuthPolicy
 - The router strips or rewrites gateway-internal headers (`mcp-session-id`, `mcp-init-host`, `router-key`) before traffic reaches upstream backends
+- **`cacheScope` correctness**: the broker uses pessimistic aggregation — any upstream with `cacheScope: "private"`, `ttlMs: 0`, or CRD `userSpecificList: true` makes the entire `tools/list` response `"private"`. Wrong `"public"` on a response containing per-user tools would leak tool lists across users. `cacheScope: "private"` triggers per-user fetching automatically, superseding the CRD field for 2026 upstreams
+- **User-specific fetch credential isolation**: when the broker fetches per-user tools from upstreams, `filterUserHeaders` strips gateway-scoped credentials (`cookie`, `proxy-authorization`) and transport headers (`content-type`, `mcp-session-id`, etc.) before forwarding. The client's `Authorization` header is preserved for upstream authentication
 
 ## Authentication and Authorization
 
