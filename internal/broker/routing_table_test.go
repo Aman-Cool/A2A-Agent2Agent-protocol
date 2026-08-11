@@ -43,7 +43,7 @@ func (m *resourceCapableMockServer) PromptsCacheMetadata() upstream.CacheMetadat
 }
 func (m *resourceCapableMockServer) SupportsResources() bool { return m.supportsResources }
 func (m *resourceCapableMockServer) ListResources(context.Context) (*mcp.ListResourcesResult, error) {
-	return nil, nil
+	return nil, ErrListResourcesNotImplemented
 }
 
 // TestBuildRoutingTable_ResourcePrefixSkipConditions confirms

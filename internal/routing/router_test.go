@@ -98,6 +98,24 @@ func newTestRouter(t *testing.T, serverConfigs []*config.MCPServer, toolMap map[
 	return router, validToken
 }
 
+// newTestRouterWithSession creates a Router202511 with a pre-populated session cache entry.
+// Useful for tests that need a valid session without triggering real initialization.
+func newTestRouterWithSession(t *testing.T, serverConfigs []*config.MCPServer, serverName string) (*Router202511, string) {
+	t.Helper()
+	router, validToken := newTestRouter(t, serverConfigs, map[string]string{}, map[string]string{})
+
+	sessionAdded, err := router.SessionCache.AddSession(context.Background(), validToken, serverName, "mock-upstream-session-id", 0)
+	require.NoError(t, err)
+	require.True(t, sessionAdded)
+
+	// Prevent real initialization from being called
+	router.InitForClient = func(_ context.Context, _ string, _ *config.MCPServer, _ map[string]string, _ bool, _ *clients.HairpinClientPool) (*mcp.ClientSession, error) {
+		return nil, fmt.Errorf("InitForClient should not be called when session exists")
+	}
+
+	return router, validToken
+}
+
 func TestMCPRequestValid(t *testing.T) {
 
 	testCases := []struct {
@@ -1754,7 +1772,7 @@ func TestHandleResourceRead_URIWithQueryParams(t *testing.T) {
 			Hostname: "dummy.mcp.local",
 		},
 	}
-	router, validToken := newTestRouter(t, serverConfigs, map[string]string{}, map[string]string{})
+	router, validToken := newTestRouterWithSession(t, serverConfigs, "dummy")
 	router.Table = func() RoutingTable {
 		return NewTableBuilder().
 			AddResourcePrefix("s_", &ServerRoute{
@@ -1766,11 +1784,6 @@ func TestHandleResourceRead_URIWithQueryParams(t *testing.T) {
 			}).
 			Build()
 	}
-
-	// Pre-populate session cache to avoid initialization
-	sessionAdded, err := router.SessionCache.AddSession(context.Background(), validToken, "dummy", "mock-session", 0)
-	require.NoError(t, err)
-	require.True(t, sessionAdded)
 
 	data := &MCPRequest{
 		ID:      ptr.To(0),
@@ -1800,7 +1813,7 @@ func TestHandleResourceRead_EmptyPrefix(t *testing.T) {
 			Hostname: "noprefixserver.mcp.local",
 		},
 	}
-	router, validToken := newTestRouter(t, serverConfigs, map[string]string{}, map[string]string{})
+	router, validToken := newTestRouterWithSession(t, serverConfigs, "noprefixserver")
 	router.Table = func() RoutingTable {
 		return NewTableBuilder().
 			AddResourcePrefix("", &ServerRoute{
@@ -1812,10 +1825,6 @@ func TestHandleResourceRead_EmptyPrefix(t *testing.T) {
 			}).
 			Build()
 	}
-
-	sessionAdded, err := router.SessionCache.AddSession(context.Background(), validToken, "noprefixserver", "mock-session", 0)
-	require.NoError(t, err)
-	require.True(t, sessionAdded)
 
 	data := &MCPRequest{
 		ID:      ptr.To(0),
@@ -1854,7 +1863,7 @@ func TestHandleResourceRead_OverlappingPrefixes(t *testing.T) {
 			Hostname: "app_admin.mcp.local",
 		},
 	}
-	router, validToken := newTestRouter(t, serverConfigs, map[string]string{}, map[string]string{})
+	router, validToken := newTestRouterWithSession(t, serverConfigs, "app_admin_server")
 	router.Table = func() RoutingTable {
 		return NewTableBuilder().
 			AddResourcePrefix("app_", &ServerRoute{
@@ -1873,10 +1882,6 @@ func TestHandleResourceRead_OverlappingPrefixes(t *testing.T) {
 			}).
 			Build()
 	}
-
-	sessionAdded, err := router.SessionCache.AddSession(context.Background(), validToken, "app_admin_server", "mock-session", 0)
-	require.NoError(t, err)
-	require.True(t, sessionAdded)
 
 	// URI matches both prefixes; longest match should win
 	data := &MCPRequest{
@@ -1908,7 +1913,7 @@ func TestHandleResourceRead_SingleCharPrefix(t *testing.T) {
 			Hostname: "dummy.mcp.local",
 		},
 	}
-	router, validToken := newTestRouter(t, serverConfigs, map[string]string{}, map[string]string{})
+	router, validToken := newTestRouterWithSession(t, serverConfigs, "dummy")
 	router.Table = func() RoutingTable {
 		return NewTableBuilder().
 			AddResourcePrefix("a", &ServerRoute{
@@ -1920,10 +1925,6 @@ func TestHandleResourceRead_SingleCharPrefix(t *testing.T) {
 			}).
 			Build()
 	}
-
-	sessionAdded, err := router.SessionCache.AddSession(context.Background(), validToken, "dummy", "mock-session", 0)
-	require.NoError(t, err)
-	require.True(t, sessionAdded)
 
 	data := &MCPRequest{
 		ID:      ptr.To(0),
