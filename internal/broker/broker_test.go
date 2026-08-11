@@ -14,6 +14,7 @@ import (
 
 	"github.com/Kuadrant/mcp-gateway/internal/broker/upstream"
 	"github.com/Kuadrant/mcp-gateway/internal/config"
+	"github.com/Kuadrant/mcp-gateway/internal/routing"
 	"github.com/Kuadrant/mcp-gateway/internal/tests/server2"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/assert"
@@ -327,7 +328,7 @@ func TestResourceAuthority_MalformedURIFallsBackToRawString(t *testing.T) {
 	// fall back to the original string rather than erroring, since callers
 	// (GetServerInfoByResource) just want something to prefix-match against.
 	malformed := "ui://\x7fbad"
-	assert.Equal(t, malformed, resourceAuthority(malformed))
+	assert.Equal(t, malformed, routing.ResourceAuthority(malformed))
 }
 
 // createTestManagerMCP is createTestManager but also returns the underlying
@@ -492,6 +493,50 @@ func TestIsReady(t *testing.T) {
 			b := NewBroker(logger).(*mcpBrokerImpl)
 			tt.setup(b)
 			require.Equal(t, tt.expected, b.IsReady())
+		})
+	}
+}
+
+// TestResourcePrefixAllowlist verifies the regex pattern accepts valid
+// prefixes and rejects invalid ones. Pattern should match CRD validation
+// (no leading underscore, but trailing underscore is optional since broker
+// injects separator via ensureSeparator).
+func TestResourcePrefixAllowlist(t *testing.T) {
+	tests := []struct {
+		prefix string
+		valid  bool
+		reason string
+	}{
+		// Happy path: valid prefixes
+		{"fast_slow", true, "lowercase with underscore, no trailing underscore"},
+		{"fast_slow_", true, "lowercase with underscores, including trailing"},
+		{"pfx", true, "simple lowercase"},
+		{"s1", true, "two characters"},
+		{"server_123_prod", true, "multiple underscores"},
+		{"a", true, "single character"},
+
+		// Sad path: invalid prefixes
+		{"_fast_slow", false, "leading underscore not allowed"},
+		{"_pfx", false, "leading underscore rejected"},
+		{"Fast_Slow", false, "uppercase not allowed"},
+		{"fast-slow", false, "hyphens not allowed"},
+		{"fast slow", false, "spaces not allowed"},
+		{"", false, "empty string invalid"},
+		{"123_pfx", true, "digit at start allowed"},
+
+		// Edge cases
+		{"9", true, "single digit allowed"},
+		{"9_", true, "digit with trailing underscore"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.prefix, func(t *testing.T) {
+			matches := resourcePrefixAllowlist.MatchString(tt.prefix)
+			if tt.valid {
+				assert.True(t, matches, "expected %q to match pattern (%s)", tt.prefix, tt.reason)
+			} else {
+				assert.False(t, matches, "expected %q to NOT match pattern (%s)", tt.prefix, tt.reason)
+			}
 		})
 	}
 }

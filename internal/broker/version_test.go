@@ -50,6 +50,7 @@ type mockActiveServer struct {
 	supportedVersions   []string
 	listResourcesResult *mcp.ListResourcesResult
 	listResourcesErr    error
+	returnNilResources  bool // when true, ListResources returns (nil, nil)
 }
 
 func (m *mockActiveServer) Stop()           {}
@@ -82,6 +83,9 @@ func (m *mockActiveServer) PromptsCacheMetadata() upstream.CacheMetadata {
 }
 func (m *mockActiveServer) SupportsResources() bool { return false }
 func (m *mockActiveServer) ListResources(context.Context) (*mcp.ListResourcesResult, error) {
+	if m.returnNilResources {
+		return nil, nil //nolint:nilnil
+	}
 	if m.listResourcesErr != nil {
 		return nil, m.listResourcesErr
 	}

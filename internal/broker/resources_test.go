@@ -210,10 +210,24 @@ func (n *nilResultServer) ListResources(context.Context) (*mcp.ListResourcesResu
 // not just this request.
 func TestFetchResourcesFromServer_NilResult(t *testing.T) {
 	b := newResourcesTestBroker(5 * time.Second)
-	resources, err := b.fetchResourcesFromServer(context.Background(), &nilResultServer{}, "pfx_")
+	resources, err := b.fetchResourcesFromServer(context.Background(), &nilResultServer{}, "pfx")
 
 	require.NoError(t, err)
 	assert.Nil(t, resources)
+}
+
+// TestFetchResourcesFromServer_NilResultWithMock verifies that the nil guard
+// handles (nil, nil) returns gracefully without crashing. Uses the mock server's
+// returnNilResources flag to trigger the nil-result path.
+func TestFetchResourcesFromServer_NilResultWithMock(t *testing.T) {
+	b := newResourcesTestBroker(5 * time.Second)
+	mock := &mockActiveServer{}
+	mock.returnNilResources = true
+
+	resources, err := b.fetchResourcesFromServer(context.Background(), mock, "my_prefix")
+
+	require.NoError(t, err, "nil result should not cause error")
+	assert.Nil(t, resources, "nil result should return nil resource slice")
 }
 
 // recordingHandler is a minimal slog.Handler that records whether any log

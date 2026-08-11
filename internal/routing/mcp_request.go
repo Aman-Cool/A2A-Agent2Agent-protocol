@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 
 	sharedheaders "github.com/Kuadrant/mcp-gateway/internal/headers"
@@ -277,4 +278,14 @@ func BuildJSONToolError(requestID any, message string) string {
 func jsonQuote(s string) string {
 	b, _ := json.Marshal(s)
 	return string(b)
+}
+
+// ResourceAuthority extracts the authority segment (host) from a resource URI.
+// For malformed URIs, returns the URI unchanged.
+func ResourceAuthority(uri string) string {
+	u, err := url.Parse(uri)
+	if err != nil {
+		return uri
+	}
+	return u.Host
 }

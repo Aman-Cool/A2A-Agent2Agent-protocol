@@ -35,7 +35,9 @@ const unpaginatedPageSize = 1 << 30
 // resourcePrefixAllowlist re-validates a server's prefix independently of the
 // CRD's own pattern validation before it's injected into a ui:// authority
 // segment (defense-in-depth in case the CRD pattern is loosened later).
-var resourcePrefixAllowlist = regexp.MustCompile(`^[a-z0-9]+_$`)
+// Pattern matches CRD: starts with alphanumeric, contains only alphanumerics and underscores.
+// Trailing underscore is optional since broker injects separator via ensureSeparator.
+var resourcePrefixAllowlist = regexp.MustCompile(`^[a-z0-9][a-z0-9_]*$`)
 
 // MCPBroker manages a set of MCP servers and their sessions
 type MCPBroker interface {
@@ -731,7 +733,7 @@ func (m *mcpBrokerImpl) GetServerInfoByResource(uri string) (*config.MCPServer, 
 	m.mcpLock.RLock()
 	defer m.mcpLock.RUnlock()
 
-	authority := resourceAuthority(uri)
+	authority := routing.ResourceAuthority(uri)
 
 	var bestMatch config.MCPServer
 	var found bool
@@ -753,17 +755,6 @@ func (m *mcpBrokerImpl) GetServerInfoByResource(uri string) (*config.MCPServer, 
 	}
 
 	return nil, fmt.Errorf("resource uri %q doesn't match any configured server", uri)
-}
-
-// resourceAuthority returns the authority segment of a resource URI (the
-// part a prefix gets injected into/stripped from), or the original string if
-// it isn't a valid URI.
-func resourceAuthority(uri string) string {
-	u, err := url.Parse(uri)
-	if err != nil {
-		return uri
-	}
-	return u.Host
 }
 
 // IsBrokerToolName returns true if the given tool name belongs to a broker-internal
@@ -860,7 +851,7 @@ func (m *mcpBrokerImpl) ValidateAllServers() StatusResponse {
 // upstream that supports them. Unlike tools/prompts, nothing is
 // pre-registered on the gateway server, so this builds the entire result
 // from scratch on every call rather than augmenting/filtering an existing
-// one. Upstreams are fanned out to concurrently (mirroring
+// one. Upstreams are fanned out concurrently (mirroring
 // FetchUserSpecificTools in user_specific_tools.go): one goroutine per
 // upstream, each with its own timeout, so one slow or down server doesn't
 // add its latency to every other server's contribution. A failing upstream

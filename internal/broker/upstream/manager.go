@@ -124,7 +124,7 @@ type ActiveMCPServer interface {
 	ToolsCacheMetadata() CacheMetadata
 	PromptsCacheMetadata() CacheMetadata
 	// SupportsResources and ListResources are live pass-throughs, not cached
-	// reads: resources are never pre-registered (see ListResources), so
+	// reads: resources are never pre-registered (see broker.FetchResources), so
 	// there is nothing for manage() to populate ahead of time.
 	SupportsResources() bool
 	ListResources(ctx context.Context) (*mcp.ListResourcesResult, error)
