@@ -41,7 +41,7 @@ func (m *resourceCapableMockServer) ToolsCacheMetadata() upstream.CacheMetadata 
 func (m *resourceCapableMockServer) PromptsCacheMetadata() upstream.CacheMetadata {
 	return upstream.CacheMetadata{}
 }
-func (m *resourceCapableMockServer) SupportsResources() bool                   { return m.supportsResources }
+func (m *resourceCapableMockServer) SupportsResources() bool { return m.supportsResources }
 func (m *resourceCapableMockServer) ListResources(context.Context) (*mcp.ListResourcesResult, error) {
 	return nil, nil
 }
