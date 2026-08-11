@@ -881,7 +881,7 @@ func (m *mcpBrokerImpl) FetchResources(ctx context.Context, result *mcp.ListReso
 	defer span.End()
 
 	var mu sync.Mutex
-	var allResources []*mcp.Resource
+	allResources := make([]*mcp.Resource, 0)
 
 	g, gCtx := errgroup.WithContext(ctx)
 	for _, srv := range servers {
@@ -946,17 +946,19 @@ func (m *mcpBrokerImpl) fetchResourcesFromServer(ctx context.Context, srv upstre
 			"server", srv.MCPName(), "nextCursor", result.NextCursor)
 	}
 
-	for i, r := range result.Resources {
+	out := make([]*mcp.Resource, 0, len(result.Resources))
+	for _, r := range result.Resources {
 		if r == nil {
+			out = append(out, nil)
 			continue
 		}
 		copied := *r
 		copied.URI = rewriteResourceURI(r.URI, prefix)
-		result.Resources[i] = &copied
+		out = append(out, &copied)
 	}
 
-	span.SetAttributes(attribute.Int("mcp.resources.resources_count", len(result.Resources)))
-	return result.Resources, nil
+	span.SetAttributes(attribute.Int("mcp.resources.resources_count", len(out)))
+	return out, nil
 }
 
 // rewriteResourceURI injects prefix into a ui:// URI's authority segment
