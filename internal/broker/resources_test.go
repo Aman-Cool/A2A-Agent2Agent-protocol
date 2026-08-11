@@ -370,3 +370,73 @@ func TestFetchResourcesFromServer_MalformedAndNonUIPassThrough(t *testing.T) {
 	assert.Equal(t, "ui://[invalid", resources[1].URI)
 	assert.Equal(t, "", resources[2].URI)
 }
+
+// separatorTestServer returns resources for testing prefix separator injection.
+type separatorTestServer struct{ mockActiveServer }
+
+func (s *separatorTestServer) ListResources(context.Context) (*mcp.ListResourcesResult, error) {
+	return &mcp.ListResourcesResult{
+		Resources: []*mcp.Resource{
+			{Name: "ui_resource", URI: "ui://template.html"},
+		},
+	}, nil
+}
+
+// TestFetchResourcesFromServer_SeparatorInjectedForPrefix verifies that a
+// prefix without a trailing underscore gets a separator injected by the broker.
+// Prefix "fast_slow" should produce "fast_slow_template.html", not "fast_slowtemplate.html".
+func TestFetchResourcesFromServer_SeparatorInjectedForPrefix(t *testing.T) {
+	b := newResourcesTestBroker(5 * time.Second)
+	resources, err := b.fetchResourcesFromServer(context.Background(), &separatorTestServer{}, "fast_slow")
+
+	require.NoError(t, err)
+	require.Len(t, resources, 1)
+	// Separator must be injected: fast_slow + _ + template.html
+	assert.Equal(t, "ui://fast_slow_template.html", resources[0].URI)
+}
+
+// TestFetchResourcesFromServer_NoDoubleSeparator verifies that a prefix that
+// already ends with underscore doesn't get a double separator.
+// Prefix "fast_slow_" should produce "fast_slow_template.html", not "fast_slow__template.html".
+func TestFetchResourcesFromServer_NoDoubleSeparator(t *testing.T) {
+	b := newResourcesTestBroker(5 * time.Second)
+	resources, err := b.fetchResourcesFromServer(context.Background(), &separatorTestServer{}, "fast_slow_")
+
+	require.NoError(t, err)
+	require.Len(t, resources, 1)
+	// No double separator when prefix already has trailing underscore
+	assert.Equal(t, "ui://fast_slow_template.html", resources[0].URI)
+}
+
+// TestFetchResourcesFromServer_EmptyPrefixNoSeparator verifies that an empty
+// prefix doesn't inject a separator. Empty prefix + template.html = template.html.
+func TestFetchResourcesFromServer_EmptyPrefixNoSeparator(t *testing.T) {
+	b := newResourcesTestBroker(5 * time.Second)
+	resources, err := b.fetchResourcesFromServer(context.Background(), &separatorTestServer{}, "")
+
+	require.NoError(t, err)
+	require.Len(t, resources, 1)
+	// Empty prefix means no rewrite at all
+	assert.Equal(t, "ui://template.html", resources[0].URI)
+}
+
+// TestFetchResourcesFromServer_SeparatorWithNonUIURI verifies that non-ui://
+// URIs are not modified even when a prefix is present. The separator logic
+// only applies to ui:// scheme URIs.
+func TestFetchResourcesFromServer_SeparatorWithNonUIURI(t *testing.T) {
+	type httpsServer struct{ mockActiveServer }
+	mock := &httpsServer{}
+	mock.listResourcesResult = &mcp.ListResourcesResult{
+		Resources: []*mcp.Resource{
+			{Name: "https_resource", URI: "https://example.com/doc.html"},
+		},
+	}
+
+	b := newResourcesTestBroker(5 * time.Second)
+	resources, err := b.fetchResourcesFromServer(context.Background(), mock, "my_prefix")
+
+	require.NoError(t, err)
+	require.Len(t, resources, 1)
+	// Non-ui:// URIs pass through unchanged, no separator injected
+	assert.Equal(t, "https://example.com/doc.html", resources[0].URI)
+}

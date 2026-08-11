@@ -961,8 +961,21 @@ func (m *mcpBrokerImpl) fetchResourcesFromServer(ctx context.Context, srv upstre
 	return out, nil
 }
 
+// ensureSeparator adds a trailing underscore to the prefix if it's non-empty
+// and doesn't already end with one. This prevents ambiguous concatenation:
+// "fast_slow" + "template.html" becomes "fast_slow_template.html", not "fast_slowtemplate.html".
+func ensureSeparator(prefix string) string {
+	if prefix == "" {
+		return prefix
+	}
+	if !strings.HasSuffix(prefix, "_") {
+		return prefix + "_"
+	}
+	return prefix
+}
+
 // rewriteResourceURI injects prefix into a ui:// URI's authority segment
-// (ui://template.html -> ui://<prefix>template.html). Non-ui:// and
+// (ui://template.html -> ui://<prefix_>template.html). Non-ui:// and
 // malformed URIs are returned unchanged, matching how the tools/call
 // response rewrite (resourceURIRewriter) treats them.
 func rewriteResourceURI(uri, prefix string) string {
@@ -971,7 +984,7 @@ func rewriteResourceURI(uri, prefix string) string {
 		return uri
 	}
 	u.User = nil // never forward upstream credentials to clients
-	u.Host = prefix + u.Host
+	u.Host = ensureSeparator(prefix) + u.Host
 	return u.String()
 }
 
