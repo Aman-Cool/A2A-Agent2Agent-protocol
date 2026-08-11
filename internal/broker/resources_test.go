@@ -239,3 +239,134 @@ func (h *recordingHandler) hasMessage(substr string) bool {
 	}
 	return false
 }
+
+// TestFetchResources_AllUpstreamsSkipped verifies that when all upstreams are
+// skipped (no prefix, invalid prefix, no resource support, error), result.Resources
+// is an empty slice (not nil), producing {"resources":[]} per MCP spec instead of
+// {"resources":null}. This guards against the bug where var allResources []*mcp.Resource
+// (nil init) was assigned directly to result.Resources.
+func TestFetchResources_AllUpstreamsSkipped(t *testing.T) {
+	b := newResourcesTestBroker(5 * time.Second)
+
+	// Every server is skipped for a different reason
+	noPrefix := newResourceTestServer(t, []*mcp.Resource{{Name: "np", URI: "ui://noprefix.html"}}, 0, 0)
+	defer noPrefix.Close()
+	b.mcpServers["noprefix"] = connectedResourceUpstream(t, config.MCPServer{Name: "noprefix", Prefix: ""}, noPrefix)
+
+	badPrefix := newResourceTestServer(t, []*mcp.Resource{{Name: "bp", URI: "ui://badprefix.html"}}, 0, 0)
+	defer badPrefix.Close()
+	b.mcpServers["badprefix"] = connectedResourceUpstream(t, config.MCPServer{Name: "badprefix", Prefix: "Bad-Prefix!"}, badPrefix)
+
+	result := &mcp.ListResourcesResult{}
+	b.FetchResources(context.Background(), result)
+
+	// result.Resources must be empty slice [], not nil. If nil, JSON marshals as {"resources":null},
+	// violating MCP spec which expects {"resources":[]}.
+	assert.NotNil(t, result.Resources, "result.Resources must be non-nil empty slice, not nil")
+	assert.Empty(t, result.Resources)
+}
+
+// TestFetchResources_CachedResultNotMutated verifies that repeated calls to
+// fetchResourcesFromServer don't mutate the SDK's cached ListResourcesResult.
+// The SDK caches results by TTL; if we mutate result.Resources[i] in-place,
+// the second call finds already-prefixed URIs and prefixes them again,
+// producing ui://pfx_pfx_resource.html. This guards against that bug by
+// confirming we build a fresh output slice instead of mutating the input.
+func TestFetchResources_CachedResultNotMutated(t *testing.T) {
+	b := newResourcesTestBroker(5 * time.Second)
+
+	ts := newResourceTestServer(t, []*mcp.Resource{{Name: "cached", URI: "ui://template.html"}}, 0, 0)
+	defer ts.Close()
+	b.mcpServers["cached"] = connectedResourceUpstream(t, config.MCPServer{Name: "cached", Prefix: "pfx_"}, ts)
+
+	// First call
+	result1 := &mcp.ListResourcesResult{}
+	b.FetchResources(context.Background(), result1)
+	assert.Equal(t, []string{"ui://pfx_template.html"}, resourceURIs(result1))
+
+	// Second call should return the same URI, not pfx_pfx_template.html
+	// (which would happen if we mutated the cached SDK result in-place).
+	result2 := &mcp.ListResourcesResult{}
+	b.FetchResources(context.Background(), result2)
+	assert.Equal(t, []string{"ui://pfx_template.html"}, resourceURIs(result2), "repeated call must not double-prefix cached URIs")
+}
+
+type nilSliceServer struct{ mockActiveServer }
+
+func (n *nilSliceServer) ListResources(context.Context) (*mcp.ListResourcesResult, error) {
+	return &mcp.ListResourcesResult{
+		Resources: []*mcp.Resource{
+			{Name: "r1", URI: "ui://first.html"},
+			nil,
+			{Name: "r3", URI: "ui://third.html"},
+		},
+	}, nil
+}
+
+type credServer struct{ mockActiveServer }
+
+func (c *credServer) ListResources(context.Context) (*mcp.ListResourcesResult, error) {
+	return &mcp.ListResourcesResult{
+		Resources: []*mcp.Resource{
+			{Name: "secret", URI: "ui://my-password@host/template.html"},
+		},
+	}, nil
+}
+
+type mixedServer struct{ mockActiveServer }
+
+func (m *mixedServer) ListResources(context.Context) (*mcp.ListResourcesResult, error) {
+	return &mcp.ListResourcesResult{
+		Resources: []*mcp.Resource{
+			{Name: "https", URI: "https://example.com/doc.html"},
+			{Name: "malformed", URI: "ui://[invalid"},
+			{Name: "blank", URI: ""},
+		},
+	}, nil
+}
+
+// TestFetchResourcesFromServer_PreservesNilEntries verifies that nil entries
+// in the resource slice are preserved and returned as-is. This ensures our
+// fix to build a fresh output slice doesn't accidentally drop nil entries,
+// which could happen if we filtered them out instead of appending.
+func TestFetchResourcesFromServer_PreservesNilEntries(t *testing.T) {
+	b := newResourcesTestBroker(5 * time.Second)
+	resources, err := b.fetchResourcesFromServer(context.Background(), &nilSliceServer{}, "pfx_")
+
+	require.NoError(t, err)
+	require.Len(t, resources, 3)
+	assert.NotNil(t, resources[0], "first entry should be non-nil")
+	assert.Nil(t, resources[1], "middle entry should be nil (preserved)")
+	assert.NotNil(t, resources[2], "third entry should be non-nil")
+	assert.Equal(t, "ui://pfx_first.html", resources[0].URI)
+	assert.Equal(t, "ui://pfx_third.html", resources[2].URI)
+}
+
+// TestFetchResourcesFromServer_StripsCredentials verifies that ui:// URIs
+// with embedded credentials are stripped before returning to clients.
+// An upstream returning ui://secret@host/template.html should produce
+// ui://pfx_host/template.html (no credentials visible to clients).
+func TestFetchResourcesFromServer_StripsCredentials(t *testing.T) {
+	b := newResourcesTestBroker(5 * time.Second)
+	resources, err := b.fetchResourcesFromServer(context.Background(), &credServer{}, "pfx_")
+
+	require.NoError(t, err)
+	require.Len(t, resources, 1)
+	// Credentials must be stripped; only the host + path remain
+	assert.Equal(t, "ui://pfx_host/template.html", resources[0].URI)
+}
+
+// TestFetchResourcesFromServer_MalformedAndNonUIPassThrough verifies that
+// non-ui:// URIs and malformed URIs are returned unchanged, per the design
+// requirement that only ui:// URIs are rewritten.
+func TestFetchResourcesFromServer_MalformedAndNonUIPassThrough(t *testing.T) {
+	b := newResourcesTestBroker(5 * time.Second)
+	resources, err := b.fetchResourcesFromServer(context.Background(), &mixedServer{}, "pfx_")
+
+	require.NoError(t, err)
+	require.Len(t, resources, 3)
+	// Non-ui:// schemes and malformed URIs pass through unchanged
+	assert.Equal(t, "https://example.com/doc.html", resources[0].URI)
+	assert.Equal(t, "ui://[invalid", resources[1].URI)
+	assert.Equal(t, "", resources[2].URI)
+}
