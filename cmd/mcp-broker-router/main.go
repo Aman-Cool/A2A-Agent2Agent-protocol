@@ -289,9 +289,7 @@ func (a *app) loadAndWatchConfig(ctx context.Context) {
 
 func (a *app) run(ctx context.Context) {
 	stop := make(chan os.Signal, 1)
-	// SIGTERM is what kubelet sends on pod termination; without it the graceful
-	// shutdown below never runs in a cluster and the process dies by default
-	// signal disposition. os.Interrupt covers local runs.
+	// handle local interrupts and SIGTERM from kubernetes
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 
 	lc := net.ListenConfig{}
