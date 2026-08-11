@@ -290,7 +290,7 @@ sequenceDiagram
 | Outcome | Router action |
 |---------|---------------|
 | `status: "success"` | Release original body to client |
-| `status: "modified"` | **Unresolved** — see Open Questions |
+| `status: "modified"` | Forward modified content to client, log status at `Debug` level. Body logging is NeMo's responsibility |
 | `status: "blocked"` | Error response, discard buffer, close stream |
 | Exceeds `maxBodyBytes` | 413. `failMode` does not apply |
 | Non-2xx / timeout | Apply `failMode`: deny → error, allow → release |
@@ -390,14 +390,17 @@ Single `*http.Client` per guardrails server, following the `HairpinClientPool` p
 
 ### Internal Architecture
 
+All guardrails logic lives in `internal/guardrails/`, isolated from router internals. The router depends on a single `Checker` interface — it never imports guardrails internals. This keeps the extraction path to a standalone filter clean: one call site to rewire.
+
 ```go
-type GuardrailsTransformer interface {
-    TransformRequest(req *MCPRequest, cfg *GuardrailsConfig, configIDs []string) ([]byte, error)
-    TransformResponse(toolName string, content []byte, cfg *GuardrailsConfig, configIDs []string) ([]byte, error)
+// internal/guardrails/checker.go — the only type the router sees
+type Checker interface {
+    CheckRequest(ctx context.Context, toolName string, arguments json.RawMessage, configIDs []string) (*Decision, error)
+    CheckResponse(ctx context.Context, toolName string, content []byte, configIDs []string) (*Decision, error)
 }
 ```
 
-Secret type determines implementation (`guardrails/external/nemo` → `NeMoTransformer`). Transformer owns request body shape. Router owns HTTP call, timeout, TLS, fail mode, config ID merging, and Decision mapping.
+`Checker` owns HTTP transport, timeout, TLS, fail mode, config ID merging, and provider translation. Secret type determines the `Transformer` implementation internally (`guardrails/external/nemo` → `NeMoTransformer`).
 
 ### Component Responsibilities
 
@@ -483,10 +486,6 @@ Benefits: schema-validated at admission, discoverable via `kubectl explain`, con
 ### Request-side value for schema-constrained tools
 
 For rigid schemas (`{"namespace": "prod", "replicas": 3}`), the latency cost may not be justified — AuthPolicy and input validation already cover access and correctness.
-
-### Modified response handling
-
-NeMo can return `status: "modified"` with altered content (e.g. PII redacted). Should the router replace the original body or release the original?
 
 ### Non-text response content
 

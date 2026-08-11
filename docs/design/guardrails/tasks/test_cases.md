@@ -49,9 +49,41 @@ tags: Happy,Guardrails
 
 - When guardrails are configured and a backend MCP server returns a `tools/call` result containing text content that triggers a block, the gateway should return a JSON-RPC error to the client instead of the tool result. The original response body should not reach the client.
 
+### [Happy,Guardrails] Tool response modified by guardrails forwards modified content
+
+- When guardrails are configured and the guardrails server returns `status: "modified"` with altered content (e.g. PII redacted), the gateway should forward the modified content to the client, not the original response. The client should receive the redacted text in the tool result.
+
+### [Guardrails,Protocol2026] Tool response modified by guardrails forwards modified content (2026)
+
+- When guardrails are configured and a 2026-07-28 client sends a `tools/call` with `MCP-Protocol-Version: 2026-07-28` header, and the guardrails server returns `status: "modified"` with altered content, the gateway should forward the modified content to the client, not the original response.
+
 ### [Guardrails] Response body exceeding maxBodyBytes rejected with 413
 
 - When guardrails are configured and a backend MCP server returns a response body larger than the configured `maxBodyBytes`, the gateway should reject with a 413 JSON-RPC error regardless of `failMode`.
+
+### [Guardrails,Protocol2026] Global guardrails blocks a dangerous tool call (2026)
+
+- When an MCPGatewayExtension is annotated with `mcp.kuadrant.io/guardrails-ref` and a 2026-07-28 client sends a `tools/call` with `MCP-Protocol-Version: 2026-07-28` header and arguments that trigger a block, the gateway should return a JSON-RPC error with a 403 status. The request should never reach the backend MCP server.
+
+### [Guardrails,Protocol2026] Global guardrails allows a safe tool call (2026)
+
+- When an MCPGatewayExtension is annotated with `mcp.kuadrant.io/guardrails-ref` and a 2026-07-28 client sends a `tools/call` with `MCP-Protocol-Version: 2026-07-28` header and arguments that pass the guardrails check, the request should be routed to the backend and the tool result returned.
+
+### [Guardrails,Protocol2026] Guardrails server unreachable — failMode deny (2026)
+
+- When the guardrails server is unreachable and `failMode: deny` (default), a 2026-07-28 client sending a `tools/call` with `MCP-Protocol-Version: 2026-07-28` header should receive a 503 JSON-RPC error.
+
+### [Guardrails,Protocol2026] Guardrails server unreachable — failMode allow (2026)
+
+- When the guardrails server is unreachable and `failMode: allow`, a 2026-07-28 client sending a `tools/call` with `MCP-Protocol-Version: 2026-07-28` header should have the request proceed to the backend as if guardrails were not configured.
+
+### [Happy,Guardrails,Protocol2026] Tool response blocked by guardrails (2026)
+
+- When guardrails are configured and a 2026-07-28 client sends a `tools/call` with `MCP-Protocol-Version: 2026-07-28` header and the backend returns a result containing text content that triggers a block, the gateway should return a JSON-RPC error instead of the tool result. The original response body should not reach the client.
+
+### [Guardrails,Protocol2026] Response body exceeding maxBodyBytes rejected with 413 (2026)
+
+- When guardrails are configured and a 2026-07-28 client makes a `tools/call` with `MCP-Protocol-Version: 2026-07-28` header, and the backend returns a response body larger than the configured `maxBodyBytes`, the gateway should reject with a 413 JSON-RPC error regardless of `failMode`.
 
 ### [Guardrails,Security] Guardrails Secret deletion fails closed
 
