@@ -199,7 +199,7 @@ func TestFetchResources_NextCursorLoggedNotFollowed(t *testing.T) {
 type nilResultServer struct{ mockActiveServer }
 
 func (n *nilResultServer) ListResources(context.Context) (*mcp.ListResourcesResult, error) {
-	return nil, nil
+	return nil, nil //nolint:nilnil
 }
 
 // TestFetchResourcesFromServer_NilResult guards against a contract slip an
