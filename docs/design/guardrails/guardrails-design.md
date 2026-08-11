@@ -494,6 +494,5 @@ Only `text` content items are inspected. `image`/`audio` (base64) and `resource`
 ## Execution
 
 See:
-- [tasks/tasks.md](tasks/tasks.md) for the implementation plan (TODO)
 - [tasks/test_cases.md](tasks/test_cases.md) for E2E test cases
 - [tasks/documentation.md](tasks/documentation.md) for documentation plan
