@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -19,7 +21,9 @@ import (
 	"github.com/Kuadrant/mcp-gateway/internal/session"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
+	"golang.org/x/sync/errgroup"
 )
 
 var _ config.Observer = &mcpBrokerImpl{}
@@ -27,6 +31,13 @@ var _ config.Observer = &mcpBrokerImpl{}
 // unpaginatedPageSize disables list pagination in practice. not math.MaxInt:
 // the SDK's paginateList computes pageSize+1, which must not overflow.
 const unpaginatedPageSize = 1 << 30
+
+// resourcePrefixAllowlist re-validates a server's prefix independently of the
+// CRD's own pattern validation before it's injected into a ui:// authority
+// segment (defense-in-depth in case the CRD pattern is loosened later).
+// Pattern matches CRD: starts with alphanumeric, contains only alphanumerics and underscores.
+// Trailing underscore is optional since broker injects separator via ensureSeparator.
+var resourcePrefixAllowlist = regexp.MustCompile(`^[a-z0-9][a-z0-9_]*$`)
 
 // MCPBroker manages a set of MCP servers and their sessions
 type MCPBroker interface {
@@ -40,6 +51,9 @@ type MCPBroker interface {
 
 	// Returns server info for a given prompt name
 	GetServerInfoByPrompt(prompt string) (*config.MCPServer, error)
+
+	// Returns server info for a given resource URI, resolved by longest matching prefix
+	GetServerInfoByResource(uri string) (*config.MCPServer, error)
 
 	// MCPServer gets an MCP server that federates the upstreams known to this MCPBroker
 	MCPServer() *mcp.Server
@@ -285,7 +299,8 @@ func NewBroker(logger *slog.Logger, opts ...Option) MCPBroker {
 	}
 
 	serverOpts := &mcp.ServerOptions{
-		HasPrompts: true,
+		HasPrompts:   true,
+		HasResources: true,
 		// mark3labs never paginated list results; a page size no client can
 		// reach keeps every list a single page with no nextCursor.
 		PageSize:     unpaginatedPageSize,
@@ -458,6 +473,14 @@ func (m *mcpBrokerImpl) filteringMiddleware() mcp.Middleware {
 				}
 
 				m.FilterPrompts(ctx, headers, promptsResult)
+
+			case "resources/list":
+				resourcesResult, ok := result.(*mcp.ListResourcesResult)
+				if !ok || resourcesResult == nil {
+					return result, nil
+				}
+				// no header extraction — resources are not user-specific in this phase
+				m.FetchResources(ctx, resourcesResult)
 			}
 
 			return result, nil
@@ -698,6 +721,42 @@ func (m *mcpBrokerImpl) GetServerInfoByPrompt(prompt string) (*config.MCPServer,
 	return nil, fmt.Errorf("prompt name %q doesn't match any configured server", prompt)
 }
 
+// GetServerInfoByResource implements MCPBroker by resolving the server that
+// owns a prefixed resource URI. Resources are never cached (see
+// FetchResources), so unlike GetServerInfo/GetServerInfoByPrompt there is no
+// exact-name lookup to try first: matching is by longest prefix on the URI's
+// authority segment alone, same approach GetServerInfo uses for
+// userSpecificList tools.
+// Only ui:// URIs can be resolved; non-ui:// URIs are returned by FetchResources
+// unrewritten and will always produce an error here.
+func (m *mcpBrokerImpl) GetServerInfoByResource(uri string) (*config.MCPServer, error) {
+	m.mcpLock.RLock()
+	defer m.mcpLock.RUnlock()
+
+	authority := routing.ResourceAuthority(uri)
+
+	var bestMatch config.MCPServer
+	var found bool
+	for _, upstream := range m.mcpServers {
+		cfg := upstream.Config()
+		if cfg.Prefix != "" && strings.HasPrefix(authority, ensureSeparator(cfg.Prefix)) {
+			if !found || len(cfg.Prefix) > len(bestMatch.Prefix) {
+				bestMatch = cfg
+				found = true
+			}
+		}
+	}
+	if found {
+		m.logger.Debug("matched server by resource prefix",
+			"uri", uri,
+			"serverPrefix", bestMatch.Prefix,
+			"serverName", bestMatch.Name)
+		return &bestMatch, nil
+	}
+
+	return nil, fmt.Errorf("resource uri %q doesn't match any configured server", uri)
+}
+
 // IsBrokerToolName returns true if the given tool name belongs to a broker-internal
 // meta-tool. The router uses this to decide whether to pass a tools/call through
 // to the broker instead of looking for an upstream server.
@@ -786,6 +845,138 @@ func (m *mcpBrokerImpl) ValidateAllServers() StatusResponse {
 		"overallValid", response.OverallValid)
 
 	return response
+}
+
+// FetchResources populates result with resources fetched live from every
+// upstream that supports them. Unlike tools/prompts, nothing is
+// pre-registered on the gateway server, so this builds the entire result
+// from scratch on every call rather than augmenting/filtering an existing
+// one. Upstreams are fanned out concurrently (mirroring
+// FetchUserSpecificTools in user_specific_tools.go): one goroutine per
+// upstream, each with its own timeout, so one slow or down server doesn't
+// add its latency to every other server's contribution. A failing upstream
+// is logged and excluded; it never fails the overall request.
+func (m *mcpBrokerImpl) FetchResources(ctx context.Context, result *mcp.ListResourcesResult) {
+	m.mcpLock.RLock()
+	servers := make([]upstream.ActiveMCPServer, 0, len(m.mcpServers))
+	for _, srv := range m.mcpServers {
+		servers = append(servers, srv)
+	}
+	m.mcpLock.RUnlock()
+
+	ctx, span := brokerTracer().Start(ctx, "broker.resources.fetch-all",
+		trace.WithAttributes(
+			attribute.Int("mcp.resources.server_count", len(servers)),
+		),
+	)
+	defer span.End()
+
+	var mu sync.Mutex
+	allResources := make([]*mcp.Resource, 0)
+
+	g, gCtx := errgroup.WithContext(ctx)
+	for _, srv := range servers {
+		cfg := srv.Config()
+
+		if !srv.SupportsResources() {
+			continue
+		}
+		if cfg.Prefix == "" {
+			m.logger.Debug("skipping resources/list for server with no prefix", "server", srv.MCPName())
+			continue
+		}
+		if !resourcePrefixAllowlist.MatchString(cfg.Prefix) {
+			m.logger.Error("skipping resources/list for server with invalid prefix", "server", srv.MCPName(), "prefix", cfg.Prefix)
+			continue
+		}
+
+		g.Go(func() error {
+			resources, err := m.fetchResourcesFromServer(gCtx, srv, cfg.Prefix)
+			if err != nil {
+				m.logger.Error("failed to fetch resources", "server", srv.MCPName(), "error", err)
+				return nil // graceful degradation: log and exclude, don't fail the request
+			}
+			mu.Lock()
+			allResources = append(allResources, resources...)
+			mu.Unlock()
+			return nil
+		})
+	}
+	_ = g.Wait()
+
+	span.SetAttributes(attribute.Int("mcp.resources.resources_fetched", len(allResources)))
+	result.Resources = allResources
+}
+
+// fetchResourcesFromServer fetches and prefix-rewrites one upstream's
+// resource list, bounded by userSpecificFetchTimeout (the broker's existing
+// per-upstream fetch timeout, shared with FetchUserSpecificTools).
+func (m *mcpBrokerImpl) fetchResourcesFromServer(ctx context.Context, srv upstream.ActiveMCPServer, prefix string) ([]*mcp.Resource, error) {
+	ctx, span := brokerTracer().Start(ctx, "broker.resources.fetch-server",
+		trace.WithAttributes(
+			attribute.String("mcp.server.name", srv.MCPName()),
+		),
+	)
+	defer span.End()
+
+	fetchCtx, cancel := context.WithTimeout(ctx, m.userSpecificFetchTimeout)
+	defer cancel()
+
+	result, err := srv.ListResources(fetchCtx)
+	if err != nil {
+		span.SetStatus(codes.Error, err.Error())
+		span.RecordError(err)
+		return nil, err
+	}
+	if result == nil {
+		return nil, nil
+	}
+
+	if result.NextCursor != "" {
+		m.logger.Debug("upstream resources/list response is paginated, only the first page is returned",
+			"server", srv.MCPName(), "nextCursor", result.NextCursor)
+	}
+
+	out := make([]*mcp.Resource, 0, len(result.Resources))
+	for _, r := range result.Resources {
+		if r == nil {
+			out = append(out, nil)
+			continue
+		}
+		copied := *r
+		copied.URI = rewriteResourceURI(r.URI, prefix)
+		out = append(out, &copied)
+	}
+
+	span.SetAttributes(attribute.Int("mcp.resources.resources_count", len(out)))
+	return out, nil
+}
+
+// ensureSeparator adds a trailing underscore to the prefix if it's non-empty
+// and doesn't already end with one. This prevents ambiguous concatenation:
+// "fast_slow" + "template.html" becomes "fast_slow_template.html", not "fast_slowtemplate.html".
+func ensureSeparator(prefix string) string {
+	if prefix == "" {
+		return prefix
+	}
+	if !strings.HasSuffix(prefix, "_") {
+		return prefix + "_"
+	}
+	return prefix
+}
+
+// rewriteResourceURI injects prefix into a ui:// URI's authority segment
+// (ui://template.html -> ui://<prefix_>template.html). Non-ui:// and
+// malformed URIs are returned unchanged, matching how the tools/call
+// response rewrite (resourceURIRewriter) treats them.
+func rewriteResourceURI(uri, prefix string) string {
+	u, err := url.Parse(uri)
+	if err != nil || u.Scheme != "ui" {
+		return uri
+	}
+	u.User = nil // never forward upstream credentials to clients
+	u.Host = ensureSeparator(prefix) + u.Host
+	return u.String()
 }
 
 // IsReady reports whether the broker can serve traffic.

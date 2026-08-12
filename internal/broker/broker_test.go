@@ -14,8 +14,10 @@ import (
 
 	"github.com/Kuadrant/mcp-gateway/internal/broker/upstream"
 	"github.com/Kuadrant/mcp-gateway/internal/config"
+	"github.com/Kuadrant/mcp-gateway/internal/routing"
 	"github.com/Kuadrant/mcp-gateway/internal/tests/server2"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -291,6 +293,44 @@ func TestGetServerInfo_UserSpecificLongestPrefix(t *testing.T) {
 	require.Equal(t, "short", svr.Name, "should match gh_ when gh_repos_ doesn't match")
 }
 
+func TestGetServerInfoByResource(t *testing.T) {
+	b := NewBroker(logger)
+	bImpl, ok := b.(*mcpBrokerImpl)
+	require.True(t, ok)
+
+	bImpl.mcpServers["short"] = upstream.NewActiveForTesting(createTestManager(t, "short", "gh_", []mcp.Tool{}))
+	bImpl.mcpServers["long"] = upstream.NewActiveForTesting(createTestManager(t, "long", "gh_repos_", []mcp.Tool{}))
+	bImpl.mcpServers["noprefix"] = upstream.NewActiveForTesting(createTestManager(t, "noprefix", "", []mcp.Tool{}))
+
+	svr, err := bImpl.GetServerInfoByResource("ui://gh_repos_search.html")
+	require.NoError(t, err)
+	require.NotNil(t, svr)
+	assert.Equal(t, "long", svr.Name, "should match longest prefix gh_repos_ not gh_")
+
+	svr, err = bImpl.GetServerInfoByResource("ui://gh_stars.html")
+	require.NoError(t, err)
+	require.NotNil(t, svr)
+	assert.Equal(t, "short", svr.Name, "should match gh_ when gh_repos_ doesn't match")
+
+	svr, err = bImpl.GetServerInfoByResource("ui://unregistered_thing.html")
+	require.Error(t, err)
+	assert.Nil(t, svr)
+
+	// a registered server with no prefix must never match, even for a uri
+	// that happens to start with its (empty) prefix
+	svr, err = bImpl.GetServerInfoByResource("ui://anything.html")
+	require.Error(t, err)
+	assert.Nil(t, svr)
+}
+
+func TestResourceAuthority_MalformedURIFallsBackToRawString(t *testing.T) {
+	// url.Parse rejects control characters; the authority extraction should
+	// fall back to the original string rather than erroring, since callers
+	// (GetServerInfoByResource) just want something to prefix-match against.
+	malformed := "ui://\x7fbad"
+	assert.Equal(t, malformed, routing.ResourceAuthority(malformed))
+}
+
 // createTestManagerMCP is createTestManager but also returns the underlying
 // MCPServer so tests can seed tool hints.
 func createTestManagerMCP(t *testing.T, serverName, prefix string, tools []mcp.Tool) (*upstream.MCPServer, *upstream.MCPManager) {
@@ -453,6 +493,50 @@ func TestIsReady(t *testing.T) {
 			b := NewBroker(logger).(*mcpBrokerImpl)
 			tt.setup(b)
 			require.Equal(t, tt.expected, b.IsReady())
+		})
+	}
+}
+
+// TestResourcePrefixAllowlist verifies the regex pattern accepts valid
+// prefixes and rejects invalid ones. Pattern should match CRD validation
+// (no leading underscore, but trailing underscore is optional since broker
+// injects separator via ensureSeparator).
+func TestResourcePrefixAllowlist(t *testing.T) {
+	tests := []struct {
+		prefix string
+		valid  bool
+		reason string
+	}{
+		// Happy path: valid prefixes
+		{"fast_slow", true, "lowercase with underscore, no trailing underscore"},
+		{"fast_slow_", true, "lowercase with underscores, including trailing"},
+		{"pfx", true, "simple lowercase"},
+		{"s1", true, "two characters"},
+		{"server_123_prod", true, "multiple underscores"},
+		{"a", true, "single character"},
+
+		// Sad path: invalid prefixes
+		{"_fast_slow", false, "leading underscore not allowed"},
+		{"_pfx", false, "leading underscore rejected"},
+		{"Fast_Slow", false, "uppercase not allowed"},
+		{"fast-slow", false, "hyphens not allowed"},
+		{"fast slow", false, "spaces not allowed"},
+		{"", false, "empty string invalid"},
+		{"123_pfx", true, "digit at start allowed"},
+
+		// Edge cases
+		{"9", true, "single digit allowed"},
+		{"9_", true, "digit with trailing underscore"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.prefix, func(t *testing.T) {
+			matches := resourcePrefixAllowlist.MatchString(tt.prefix)
+			if tt.valid {
+				assert.True(t, matches, "expected %q to match pattern (%s)", tt.prefix, tt.reason)
+			} else {
+				assert.False(t, matches, "expected %q to NOT match pattern (%s)", tt.prefix, tt.reason)
+			}
 		})
 	}
 }

@@ -422,6 +422,10 @@ func (m *mockActiveMCPServer) ToolsCacheMetadata() upstream.CacheMetadata {
 func (m *mockActiveMCPServer) PromptsCacheMetadata() upstream.CacheMetadata {
 	return upstream.CacheMetadata{}
 }
+func (m *mockActiveMCPServer) SupportsResources() bool { return false }
+func (m *mockActiveMCPServer) ListResources(context.Context) (*mcp.ListResourcesResult, error) {
+	return &mcp.ListResourcesResult{}, nil
+}
 
 // seedUserSession dials the fake upstream and stores a pooled session for
 // the given gateway session ID.

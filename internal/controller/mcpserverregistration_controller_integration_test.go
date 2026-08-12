@@ -1038,4 +1038,5 @@ var _ = Describe("MCPServerRegistration Controller", func() {
 			Entry("all lowercase", "weatherserver"),
 		)
 	})
+
 })
