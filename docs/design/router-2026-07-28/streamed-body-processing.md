@@ -100,7 +100,9 @@ For `2025-11-25`, the router sets `:authority` and calls `ClearRouteCache` in th
 
 ### Response body streaming for guardrails
 
-When guardrails are configured, `ResponseBodyMode` is set to `FULL_DUPLEX_STREAMED` via one of two paths depending on scope. For gateway-level guardrails (Secret has default config IDs), the controller configures `FULL_DUPLEX_STREAMED` directly on the ext_proc filter — it applies to all responses. For per-server guardrails only (empty default IDs), the router sets it dynamically via `ModeOverride` in the request header response, scoped to requests targeting servers with guardrails. Both paths apply to `2026-07-28` and `2025-11-25` clients.
+When guardrails are configured, the router sets `ResponseBodyMode` to `FULL_DUPLEX_STREAMED` dynamically via `ModeOverride` in the request header response, scoped to requests targeting servers with guardrails. This applies to both `2026-07-28` and `2025-11-25` clients. The controller does not set `FULL_DUPLEX_STREAMED` statically on the ext_proc filter.
+
+> **Why not static `FULL_DUPLEX_STREAMED`:** Envoy's [`allow_mode_override`](https://www.envoyproxy.io/docs/envoy/latest/api-v3/extensions/filters/http/ext_proc/v3/ext_proc.proto) docs state "Mode override is not supported if the body send mode is `FULL_DUPLEX_STREAMED`." Tested against Envoy v1.33. 
 
 `FULL_DUPLEX_STREAMED` sends response body chunks to ext_proc without waiting for each response, allowing the router to forward chunks to the guardrails service without stalling the upstream read. Envoy [requires](https://www.envoyproxy.io/docs/envoy/latest/api-v3/extensions/filters/http/ext_proc/v3/processing_mode.proto) `ResponseTrailerMode: SEND` when using `FULL_DUPLEX_STREAMED` — trailers (or `end_of_stream` on the last body chunk) signal that the complete body has arrived. The handling depends on response type: SSE responses (`text/event-stream`) are checked per-event as they arrive, while JSON responses (`application/json`) are accumulated in full (bounded by `maxBodyBytes`) before sending to guardrails. See the [guardrails design](../guardrails/guardrails-design.md) for details.
 
