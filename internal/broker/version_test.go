@@ -88,7 +88,7 @@ func (m *mockActiveServer) ListResources(context.Context) (*mcp.ListResourcesRes
 		return nil, nil //nolint:nilnil
 	}
 	if m.returnNilResult {
-		return nil, m.listResourcesErr //nolint:nilnil
+		return nil, m.listResourcesErr
 	}
 	if m.listResourcesErr != nil {
 		return nil, m.listResourcesErr
