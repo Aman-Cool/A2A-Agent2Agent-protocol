@@ -739,7 +739,7 @@ func (m *mcpBrokerImpl) GetServerInfoByResource(uri string) (*config.MCPServer, 
 	var found bool
 	for _, upstream := range m.mcpServers {
 		cfg := upstream.Config()
-		if cfg.Prefix != "" && strings.HasPrefix(authority, cfg.Prefix) {
+		if cfg.Prefix != "" && strings.HasPrefix(authority, ensureSeparator(cfg.Prefix)) {
 			if !found || len(cfg.Prefix) > len(bestMatch.Prefix) {
 				bestMatch = cfg
 				found = true
