@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/Kuadrant/mcp-gateway/internal/broker"
@@ -288,7 +289,8 @@ func (a *app) loadAndWatchConfig(ctx context.Context) {
 
 func (a *app) run(ctx context.Context) {
 	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, os.Interrupt)
+	// handle local interrupts and SIGTERM from kubernetes
+	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 
 	lc := net.ListenConfig{}
 	lis, err := lc.Listen(ctx, "tcp", a.routerCfg.addr)
