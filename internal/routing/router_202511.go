@@ -298,7 +298,7 @@ func (r *Router202511) routeResourceRead(ctx context.Context, table RoutingTable
 	}
 
 	headers := make(map[string]string)
-	route, ok := table.LookupResourcePrefix(resourceAuthority(resourceURI))
+	route, ok := table.LookupResourcePrefix(ResourceAuthority(resourceURI))
 	if !ok {
 		r.Logger.DebugContext(ctx, "no server for resource", "uri", resourceURI)
 		mcpotel.SpanError(span, fmt.Errorf("resource not found: %s", resourceURI), "resource not found")
@@ -328,18 +328,6 @@ func (r *Router202511) routeResourceRead(ctx context.Context, table RoutingTable
 	headers[MCPServerNameHeader] = serverInfo.Name
 
 	return r.routeToUpstream(ctx, span, mcpReq, serverInfo, headers)
-}
-
-// resourceAuthority returns the authority segment of a resource URI (the
-// part a prefix is matched against/stripped from), or the original string if
-// it isn't a valid URI. Mirrors the broker's identically named helper used
-// on the write side of prefix injection (internal/broker/broker.go).
-func resourceAuthority(uri string) string {
-	u, err := url.Parse(uri)
-	if err != nil {
-		return uri
-	}
-	return u.Host
 }
 
 // stripResourcePrefix removes prefix from a ui:// URI's authority segment,
