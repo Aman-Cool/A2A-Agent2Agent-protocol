@@ -2,11 +2,17 @@
 
 ## Problem
 
-By default, the router uses `BUFFERED` request body mode so it can parse the JSON-RPC body to extract the method and tool name for routing decisions. This is a 2025 protocol constraint. With `2026-07-28` clients, `Mcp-Method` and `Mcp-Name` headers must be sent and carry the needed routing information. Request bodies still need their tool names to be re-written but the routing decision can be made and returned to Envoy before the body is sent.
+MCP clients using the 2025 protocol, require the router use `BUFFERED` request body mode so it can parse the JSON-RPC body to extract the method and tool name for routing decisions. It cannot use streamed modes as this causes inconsistent routing. 
+
+Envoy's ext_proc proto defines this constraint on the [`CommonResponse.header_mutation`](https://www.envoyproxy.io/docs/envoy/latest/api-v3/service/ext_proc/v3/external_processor.proto) field:
+
+> "When responding to an HttpBody request, header mutations will only take effect if the current processing mode for the body is BUFFERED."
+
+With the 2026 protocol clients, `Mcp-Method` and `Mcp-Name` headers must be sent and carry the needed routing information. Request bodies still need their tool names to be re-written and validated but the routing decision can be made and returned to Envoy before the body is sent.
 
 ## Summary
 
-When the ext_proc adapter identifies a `2026-07-28` client in the request headers phase, it responds with a `ModeOverride` switching the request body mode to `STREAMED` and the response body mode to `NONE`. Routing completes entirely in the headers phase. The request body streams through for tool name prefix stripping only.
+When the ext_proc adapter identifies a `2026-07-28` client in the request headers phase, it responds with a `ModeOverride` switching the request body mode to `STREAMED`. Routing completes entirely in the headers phase. The request body streams through for prefix stripping.
 
 ## Relationship to Router Design
 
@@ -31,7 +37,7 @@ responses[0].ModeOverride = &extprochttp.ProcessingMode{
 }
 ```
 
-`ResponseBodyMode` defaults to `NONE` — the response streams directly from backend to client without ext_proc involvement.
+`ResponseBodyMode` defaults to `NONE` — the response streams directly from backend to client without ext_proc involvement except in specific circumstances (elicitation/guardrails).
 
 This is already the case. For `2025-11-25` clients, the existing behaviour is unchanged: `BUFFERED` request body for JSON-RPC parsing, `STREAMED` response body for elicitation ID rewriting (opted into when needed).
 
@@ -39,18 +45,20 @@ This is already the case. For `2025-11-25` clients, the existing behaviour is un
 
 With `STREAMED` mode, Envoy sends request body chunks to ext_proc as they arrive without waiting for the full body. The router needs the body only for tool name prefix stripping — rewriting `"name": "github_search"` to `"name": "search"` in the JSON-RPC body.
 
-When no prefix is configured for the target server, the request body needs no mutation. The adapter sets `RequestBodyMode` to `NONE`, eliminating the body phase entirely. Header-body name validation is the responsibility of the target MCP server, which the `2026-07-28` spec requires (`HeaderMismatch` rejection).
+When no prefix is configured for the target server (known based on the server config), the request body needs no mutation. The adapter sets `RequestBodyMode` to `NONE`, eliminating the body phase entirely. Header-body name validation is the responsibility of the target MCP server.
 
 ### Response body: default NONE
 
-For `2026-07-28`, the response body mode defaults to `NONE`. The response streams directly from the backend to the client — ext_proc is not involved. No session ID mapping, no elicitation ID rewriting, no SSE stream parsing.
+For `2026-07-28`, the response body mode defaults to `NONE`. The response streams directly from the backend to the client — ext_proc is not involved. No session ID mapping, no elicitation ID rewriting, no SSE stream parsing. An exception to this is if there are guard rails configured.
 
 
 ### Header mutations and body-phase restrictions
 
-Envoy only applies header mutations in body-phase responses when the body mode is `BUFFERED`. Since `2026-07-28` completes all header mutations in the request headers phase (`:authority`, `Mcp-Name`, `x-mcp-*` headers), this restriction does not apply. Body-phase responses contain only `BodyMutation` for prefix stripping, no header changes.
+In any non-`BUFFERED` mode, header mutations returned in body-phase responses are silently ignored. This also renders [`clear_route_cache`](https://www.envoyproxy.io/docs/envoy/latest/api-v3/service/ext_proc/v3/external_processor.proto) ineffective in those modes: there are no header changes for Envoy to re-route on.
 
-This is a key difference from `2025-11-25`, where `:authority` is set in the body phase response using `BUFFERED` mode with `ClearRouteCache: true` and `allow_all_routing: true` in the EnvoyFilter config.
+For `2025-11-25`, the router sets `:authority` and calls `ClearRouteCache` in the body phase after parsing the JSON-RPC method. This requires `BUFFERED` mode — switching to `STREAMED` would silently drop the `:authority` mutation and route requests to the broker instead of the target backend. In practice, the failure is intermittent: with `STREAMED` mode. This makes the issue difficult to diagnose since it appears as flaky routing rather than a consistent failure.
+
+`2026-07-28` avoids this constraint entirely. All header mutations (`:authority`, `Mcp-Name`, `x-mcp-*`) complete in the request headers phase, before body processing begins. Body-phase responses contain only `BodyMutation` for prefix stripping, no header changes. This makes `STREAMED` body mode safe to use.
 
 ### Protocol-specific flow
 
@@ -72,10 +80,30 @@ This is a key difference from `2025-11-25`, where `:authority` is set in the bod
   Request Body    → BUFFERED, parse JSON-RPC, routing decision, :authority set
   Response Headers→ session ID rewrite
   Response Body   → STREAMED (elicitation ID rewriting)
+
+2026-07-28 client (guardrails, with prefix):
+  Request Headers → routing decision + ModeOverride(STREAMED, FULL_DUPLEX_STREAMED, ResponseTrailers: SEND)
+  Request Body    → stream chunks, strip prefix
+  Response Headers→ pass-through
+  Response Body   → FULL_DUPLEX_STREAMED: SSE per-event check, JSON accumulate full body
+  Response Trailers→ SEND (required by FULL_DUPLEX_STREAMED for end-of-stream signalling)
+
+2025-11-25 client (guardrails):
+  Request Headers → protocol selection only
+  Request Body    → BUFFERED, parse JSON-RPC, routing decision, :authority set
+  Response Headers→ session ID rewrite
+  Response Body   → FULL_DUPLEX_STREAMED: SSE per-event check, JSON accumulate full body
+  Response Trailers→ SEND (required by FULL_DUPLEX_STREAMED for end-of-stream signalling)
 ```
 
 ## Future Considerations
 
 ### Response body streaming for guardrails
 
-When guardrails are configured, the router sets `ResponseBodyMode` to `FULL_DUPLEX_STREAMED`, overriding `NONE` in the protocol-specific flow above. This applies to both `2026-07-28` and `2025-11-25` clients. For SSE responses, the router processes per-event using SSE framing. For JSON responses, the router accumulates the full body. See the [guardrails design](../guardrails/guardrails-design.md) for the buffering model and size cap behaviour.
+When guardrails are configured, the router sets `ResponseBodyMode` to `FULL_DUPLEX_STREAMED` dynamically via `ModeOverride` in the request header response, scoped to requests targeting servers with guardrails. This applies to both `2026-07-28` and `2025-11-25` clients. The controller does not set `FULL_DUPLEX_STREAMED` statically on the ext_proc filter.
+
+> **Why not static `FULL_DUPLEX_STREAMED`:** Envoy's [`allow_mode_override`](https://www.envoyproxy.io/docs/envoy/latest/api-v3/extensions/filters/http/ext_proc/v3/ext_proc.proto) docs state "Mode override is not supported if the body send mode is `FULL_DUPLEX_STREAMED`." Tested against Envoy v1.33. 
+
+`FULL_DUPLEX_STREAMED` sends response body chunks to ext_proc without waiting for each response, allowing the router to forward chunks to the guardrails service without stalling the upstream read. Envoy [requires](https://www.envoyproxy.io/docs/envoy/latest/api-v3/extensions/filters/http/ext_proc/v3/processing_mode.proto) `ResponseTrailerMode: SEND` when using `FULL_DUPLEX_STREAMED` — trailers (or `end_of_stream` on the last body chunk) signal that the complete body has arrived. The handling depends on response type: SSE responses (`text/event-stream`) are checked per-event as they arrive, while JSON responses (`application/json`) are accumulated in full (bounded by `maxBodyBytes`) before sending to guardrails. See the [guardrails design](../guardrails/guardrails-design.md) for details.
+
+The primary integration target is [NeMo Guardrails](https://docs.nvidia.com/nemo/guardrails/reference/guardrails-api-server/chat-completions/chat-completions), which exposes an OpenAI-compatible `POST /v1/chat/completions` endpoint.

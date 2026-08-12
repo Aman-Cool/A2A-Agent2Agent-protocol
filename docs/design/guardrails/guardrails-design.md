@@ -215,14 +215,11 @@ sequenceDiagram
 
 ### Response Handling
 
-Response body mode depends on scope:
+The router sets `ResponseBodyMode` to `FULL_DUPLEX_STREAMED` dynamically via `ModeOverride` in the request header response, scoped to requests targeting servers with guardrails. This applies regardless of whether guardrails are gateway-level or per-server.
 
-| Configuration | Response body mode | Mechanism |
-|---------------|-------------------|-----------|
-| Gateway-level (Secret has default config IDs) | `FULL_DUPLEX_STREAMED` permanently | Controller configures ext_proc filter |
-| Per-server only (empty default IDs) | `FULL_DUPLEX_STREAMED` dynamically | Router sets `ModeOverride` only for requests/responses for servers with guardrails |
+> **Why always dynamic:** Envoy disables `ModeOverride` entirely when any body send mode is `FULL_DUPLEX_STREAMED` in the static filter config ([tested against v1.33](../router-2026-07-28/streamed-body-processing.md#response-body-streaming-for-guardrails)). The router needs `ModeOverride` to switch `request_body_mode` between `BUFFERED` (2025 clients) and `STREAMED` (2026 clients). Setting `response_body_mode: FULL_DUPLEX_STREAMED` statically would lock request body mode, breaking dual-protocol support.
 
-See [streamed body processing](../router-2026-07-28/streamed-body-processing.md) for the mode override mechanism. This mirrors how elicitation is handled also.
+See [streamed body processing](../router-2026-07-28/streamed-body-processing.md) for the mode override mechanism.
 
 #### SSE responses (`text/event-stream`)
 
@@ -409,7 +406,7 @@ type Checker interface {
 | Controller | Reads/validates guardrails Secret, writes config. Sets MCPServerRegistration NotReady if gateway guardrails missing |
 | Router | Calls guardrails before routing `tools/call` and elicitation accepts, maps response to Decision |
 | Broker | No involvement |
-| Envoy | `FULL_DUPLEX_STREAMED` response body mode when guardrails configured |
+| Envoy | `FULL_DUPLEX_STREAMED` response body mode via router `ModeOverride` when guardrails configured |
 
 ### Observability
 
