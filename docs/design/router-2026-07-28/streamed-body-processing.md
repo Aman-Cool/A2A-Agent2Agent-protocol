@@ -49,7 +49,7 @@ When no prefix is configured for the target server (known based on the server co
 
 ### Response body: default NONE
 
-For `2026-07-28`, the response body mode defaults to `NONE`. The response streams directly from the backend to the client — ext_proc is not involved. No session ID mapping, no elicitation ID rewriting, no SSE stream parsing. An exception to this is if there are guard rails configured (see [guardrails](../guardrails/guardrails-design.md))
+For `2026-07-28`, the response body mode defaults to `NONE`. The response streams directly from the backend to the client — ext_proc is not involved. No session ID mapping, no elicitation ID rewriting, no SSE stream parsing. An exception to this is if there are guard rails configured.
 
 
 ### Header mutations and body-phase restrictions
@@ -82,16 +82,18 @@ For `2025-11-25`, the router sets `:authority` and calls `ClearRouteCache` in th
   Response Body   → STREAMED (elicitation ID rewriting)
 
 2026-07-28 client (guardrails, with prefix):
-  Request Headers → routing decision + ModeOverride(STREAMED, FULL_DUPLEX_STREAMED)
+  Request Headers → routing decision + ModeOverride(STREAMED, FULL_DUPLEX_STREAMED, ResponseTrailers: SEND)
   Request Body    → stream chunks, strip prefix
   Response Headers→ pass-through
   Response Body   → FULL_DUPLEX_STREAMED: SSE per-event check, JSON accumulate full body
+  Response Trailers→ SEND (required by FULL_DUPLEX_STREAMED for end-of-stream signalling)
 
 2025-11-25 client (guardrails):
   Request Headers → protocol selection only
   Request Body    → BUFFERED, parse JSON-RPC, routing decision, :authority set
   Response Headers→ session ID rewrite
   Response Body   → FULL_DUPLEX_STREAMED: SSE per-event check, JSON accumulate full body
+  Response Trailers→ SEND (required by FULL_DUPLEX_STREAMED for end-of-stream signalling)
 ```
 
 ## Future Considerations
@@ -100,6 +102,6 @@ For `2025-11-25`, the router sets `:authority` and calls `ClearRouteCache` in th
 
 When guardrails are configured, `ResponseBodyMode` is set to `FULL_DUPLEX_STREAMED` via one of two paths depending on scope. For gateway-level guardrails (Secret has default config IDs), the controller configures `FULL_DUPLEX_STREAMED` directly on the ext_proc filter — it applies to all responses. For per-server guardrails only (empty default IDs), the router sets it dynamically via `ModeOverride` in the request header response, scoped to requests targeting servers with guardrails. Both paths apply to `2026-07-28` and `2025-11-25` clients.
 
-`FULL_DUPLEX_STREAMED` sends response body chunks to ext_proc without waiting for each response, allowing the router to forward chunks to the guardrails service without stalling the upstream read. The handling depends on response type: SSE responses (`text/event-stream`) are checked per-event as they arrive, while JSON responses (`application/json`) are accumulated in full (bounded by `maxBodyBytes`) before sending to guardrails. See the [guardrails design](../guardrails/guardrails-design.md) for details.
+`FULL_DUPLEX_STREAMED` sends response body chunks to ext_proc without waiting for each response, allowing the router to forward chunks to the guardrails service without stalling the upstream read. Envoy [requires](https://www.envoyproxy.io/docs/envoy/latest/api-v3/extensions/filters/http/ext_proc/v3/processing_mode.proto) `ResponseTrailerMode: SEND` when using `FULL_DUPLEX_STREAMED` — trailers (or `end_of_stream` on the last body chunk) signal that the complete body has arrived. The handling depends on response type: SSE responses (`text/event-stream`) are checked per-event as they arrive, while JSON responses (`application/json`) are accumulated in full (bounded by `maxBodyBytes`) before sending to guardrails. See the [guardrails design](../guardrails/guardrails-design.md) for details.
 
 The primary integration target is [NeMo Guardrails](https://docs.nvidia.com/nemo/guardrails/reference/guardrails-api-server/chat-completions/chat-completions), which exposes an OpenAI-compatible `POST /v1/chat/completions` endpoint.
