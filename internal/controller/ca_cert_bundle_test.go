@@ -15,6 +15,7 @@ import (
 	"time"
 
 	mcpv1 "github.com/Kuadrant/mcp-gateway/api/v1"
+	"github.com/Kuadrant/mcp-gateway/internal/config"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -47,6 +48,9 @@ func generateTestCACertPEM(t *testing.T) []byte {
 type capturingConfigWriter struct {
 	lastCACertPEM string
 	writeCalled   bool
+
+	lastGuardrailsConfig  *config.GuardrailsConfig
+	guardrailsWriteCalled bool
 }
 
 func (c *capturingConfigWriter) DeleteConfig(_ context.Context, _ types.NamespacedName) error {
@@ -61,6 +65,11 @@ func (c *capturingConfigWriter) WriteEmptyConfig(_ context.Context, _ types.Name
 func (c *capturingConfigWriter) WriteCACertBundle(_ context.Context, caCertPEM string, _ types.NamespacedName) error {
 	c.lastCACertPEM = caCertPEM
 	c.writeCalled = true
+	return nil
+}
+func (c *capturingConfigWriter) WriteGlobalGuardrails(_ context.Context, guardrailsConfig *config.GuardrailsConfig, _ types.NamespacedName) error {
+	c.lastGuardrailsConfig = guardrailsConfig
+	c.guardrailsWriteCalled = true
 	return nil
 }
 

@@ -108,6 +108,13 @@ spec:
                 - warn
                 - error
                 type: string
+              maxBodyBytes:
+                default: 1048576
+                description: |-
+                  maxBodyBytes caps the size of any body the router buffers, in bytes.
+                  Applies to request/response prefix stripping and guardrails checks.
+                format: int32
+                type: integer
               oauthProtectedResource:
                 description: |-
                   oauthProtectedResource configures the OAuth protected resource metadata
