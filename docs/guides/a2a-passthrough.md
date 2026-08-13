@@ -25,8 +25,12 @@ With the feature enabled, for any request whose path begins with `/a2a/`:
 - Everything else passes through untouched. The request is carried to the agent by your own
   HTTPRoute, not by the gateway.
 
-Because these headers are router-derived and stripped from client input, a client cannot
-forge the values that policy and telemetry key on.
+A client cannot inject these headers directly — the router strips any client-supplied copy
+and sets its own — so a policy or access log that keys on them sees the router's value, not
+one the client planted. The client still *chooses* the path segment and JSON-RPC method the
+router derives them from, so it is route matching and the AuthPolicy below that constrain
+which agent and method a given client is allowed to reach; the headers describe the request,
+they do not by themselves authorize it.
 
 ## Prerequisites
 
@@ -35,7 +39,9 @@ forge the values that policy and telemetry key on.
 
 ## Step 1: Enable the feature
 
-Add the `--enable-a2a` flag to the broker-router deployment:
+`--enable-a2a` is a command-line flag on the broker-router, not an environment variable, so
+`kubectl set env` does not apply — add it to the deployment's container command. The
+controller treats it as a user-managed flag and preserves it across reconciles:
 
 ```bash
 kubectl patch deployment mcp-gateway -n mcp-system --type='json' \
@@ -80,9 +86,18 @@ spec:
 EOF
 ```
 
+Verify the route was accepted by the gateway:
+
+```bash
+kubectl get httproute weather-agent-route -n mcp-test \
+  -o jsonpath='{.status.parents[0].conditions[?(@.type=="Accepted")].status}'
+# expect: True
+```
+
 A `SendMessage` to `/a2a/weather` now traverses the router — which sets
 `x-a2a-agent: weather` and `x-a2a-method: SendMessage` — before your route forwards it to
-the `weather-agent` backend.
+the `weather-agent` backend. You can confirm the headers reach the agent by inspecting what
+the agent received, or the access log configured in Step 4.
 
 ## Step 3: Authorize per agent
 
@@ -122,14 +137,30 @@ spec:
 EOF
 ```
 
+Verify the policy is enforced:
+
+```bash
+kubectl get authpolicy a2a-auth-policy -n gateway-system \
+  -o jsonpath='{.status.conditions[?(@.type=="Enforced")].status}'
+# expect: True
+```
+
 A client whose token grants the `agent:weather` role reaches the agent; one without it gets
-a 403 before the request leaves the gateway. You can also rate-limit A2A traffic with a
-`RateLimitPolicy` keyed on `x-a2a-agent` the same way.
+a 403 before the request leaves the gateway (a `POST` with no bearer, or an unauthorized
+one, returns 401/403 rather than reaching the agent). You can also rate-limit A2A traffic
+with a `RateLimitPolicy` keyed on `x-a2a-agent` the same way.
 
 ## Step 4: Audit and observe
 
-Surface the agent and method in the Istio access log so A2A invocations appear keyed by
-agent and method. This example adds them as tags on the gateway's access log:
+The router-set `x-a2a-agent` and `x-a2a-method` headers are ordinary request headers, so any
+access-log format or Telemetry that reads request headers can surface them.
+
+Surfacing the header *values* takes two pieces. The built-in `envoy` access-log provider logs
+Envoy's default fields — not arbitrary request headers — so first define a provider whose
+format includes the A2A headers, exactly as the [Auditing guide](./auditing.md) describes for
+the MCP headers, adding `%REQ(X-A2A-AGENT)%` and `%REQ(X-A2A-METHOD)%` to its format string.
+Then attach a Telemetry that scopes access logging to the gateway and to A2A traffic, and
+references that provider:
 
 ```bash
 kubectl apply -f - <<'EOF'
@@ -139,17 +170,30 @@ metadata:
   name: a2a-access-log
   namespace: gateway-system
 spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: mcp-gateway
   accessLogging:
     - providers:
-        - name: envoy
+        - name: a2a-access-log-provider   # the MeshConfig provider defined above
       filter:
         expression: "request.url_path.startsWith('/a2a/')"
 EOF
 ```
 
-The router-set `x-a2a-agent` and `x-a2a-method` headers are available to any Telemetry or
-policy that reads request headers; `x-a2a-method`'s bounded value set keeps it safe as a
-metric dimension.
+Without `targetRefs` the Telemetry would apply to every workload in `gateway-system`; scoping
+it to the gateway keeps it to A2A traffic on the gateway. Because `x-a2a-method` is normalized
+to a bounded value set (known v1 methods, else `other`), it is also safe to use as a metric
+dimension, not just a log field.
+
+Verify the Telemetry was accepted:
+
+```bash
+kubectl get telemetry a2a-access-log -n gateway-system -o name
+# then send an A2A request and confirm the agent and method appear in the gateway's access log:
+kubectl logs -n gateway-system -l gateway.networking.k8s.io/gateway-name=mcp-gateway --tail=20 | grep a2a
+```
 
 ## Trust boundaries in this phase
 
