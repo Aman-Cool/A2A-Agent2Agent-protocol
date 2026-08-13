@@ -335,7 +335,7 @@ func (r *Router202511) routeResourceRead(ctx context.Context, table RoutingTable
 // rewriteResourceURI. Non-ui:// and malformed URIs are returned unchanged.
 func stripResourcePrefix(uri, prefix string) string {
 	u, err := url.Parse(uri)
-	if err != nil || u.Scheme != "ui" {
+	if err != nil || u.Scheme != "ui" || u.Host == "" {
 		return uri
 	}
 	u.Host = strings.TrimPrefix(u.Host, prefix)
