@@ -1932,12 +1932,17 @@ func TestHandleResourceRead_SingleCharPrefix(t *testing.T) {
 			Build()
 	}
 
+	// Round-trip test: broker generates prefixed URI with ensureSeparator,
+	// router should strip it back to original
+	originalURI := "ui://file.html"
+	brokerPrefixedURI := "ui://" + ensureSeparator("a") + "file.html"
+
 	data := &MCPRequest{
 		ID:      ptr.To(0),
 		JSONRPC: "2.0",
 		Method:  "resources/read",
 		Params: map[string]any{
-			"uri": "ui://afile.html",
+			"uri": brokerPrefixedURI,
 		},
 		Headers: map[string]string{
 			"mcp-session-id": validToken,
@@ -1946,7 +1951,7 @@ func TestHandleResourceRead_SingleCharPrefix(t *testing.T) {
 
 	decision := router.RouteRequest(context.Background(), &Request{Parsed: data})
 	require.Nil(t, decision.Error)
-	require.Equal(t, "ui://file.html", decision.SetHeaders["x-mcp-resourceuri"])
+	require.Equal(t, originalURI, decision.SetHeaders["x-mcp-resourceuri"])
 	require.Equal(t, "dummy", decision.SetHeaders["x-mcp-servername"])
 }
 

@@ -320,3 +320,15 @@ func ResourceAuthority(uri string) string {
 	}
 	return u.Host
 }
+
+// ensureSeparator returns prefix with trailing underscore, adding one if needed.
+// Empty prefix is returned unchanged.
+func ensureSeparator(prefix string) string {
+	if prefix == "" {
+		return prefix
+	}
+	if !strings.HasSuffix(prefix, "_") {
+		return prefix + "_"
+	}
+	return prefix
+}

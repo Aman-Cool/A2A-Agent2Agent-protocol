@@ -338,7 +338,7 @@ func stripResourcePrefix(uri, prefix string) string {
 	if err != nil || u.Scheme != "ui" || u.Host == "" {
 		return uri
 	}
-	u.Host = strings.TrimPrefix(u.Host, prefix)
+	u.Host = strings.TrimPrefix(u.Host, ensureSeparator(prefix))
 	return u.String()
 }
 
