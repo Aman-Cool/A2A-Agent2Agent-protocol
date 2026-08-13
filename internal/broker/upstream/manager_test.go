@@ -190,6 +190,7 @@ func (m *MockMCP) SupportsVersion(v string) bool {
 
 func (m *MockMCP) ToolsCacheMetadata() CacheMetadata   { return CacheMetadata{} }
 func (m *MockMCP) PromptsCacheMetadata() CacheMetadata { return CacheMetadata{} }
+func (m *MockMCP) UsesStatelessProtocol() bool         { return m.protocolVersion >= "2026-07-28" }
 
 // newMockMCP creates a MockMCP with sensible defaults for testing
 func newMockMCP(name, prefix string) *MockMCP {
@@ -239,6 +240,8 @@ func (m *MockToolsAdderDeleter) DeleteTools(names ...string) {
 func (m *MockToolsAdderDeleter) ListTools() map[string]*GatewayTool {
 	return m.tools
 }
+
+func (m *MockToolsAdderDeleter) NotifyMetadataChanged() {}
 
 func TestNewUpstreamMCPManager(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
@@ -889,6 +892,8 @@ func (m *MockGatewayServer) ListTools() map[string]*GatewayTool {
 	}
 	return result
 }
+
+func (m *MockGatewayServer) NotifyMetadataChanged() {}
 
 func TestMCPManager_shouldFetchTools(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))

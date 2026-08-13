@@ -13,37 +13,20 @@ The broker's 2026 protocol support is transparent to gateway operators. There ar
 
 The existing `docs/guides/scaling.md` and `docs/guides/authentication.md` guides remain accurate.
 
-## Security Architecture Update (`docs/design/security-architecture.md`)
+## Security Architecture Update (`docs/design/security-architecture.md`) ✅
 
-### When I need to understand how cache scope protects per-user tool lists
+Updated in task 5. Added `cacheScope` correctness (pessimistic aggregation), `filterUserHeaders` credential stripping, and broker→upstream per-user fetch boundary to the data crossing table.
 
-When a security reviewer or contributor needs to assess the trust model for `cacheScope` aggregation, they want to understand how the broker prevents tool list cross-contamination.
+## Design Doc Update (`docs/design/overview.md`) ✅
 
-**Cover:**
-- Cache scope aggregation: pessimistic `"private"` when any upstream is private
-- Why wrong `"public"` on a response with per-user tools is a tool list leak
-- `ttlMs` manipulation: malicious upstream returning large ttlMs bounded by `min()` across upstreams
-- `subscriptions/listen` uses the same `credentialRef` auth as `ListTools`
+Updated in task 5. Added dual-protocol support bullet to broker responsibilities with pointer to the broker-2026-07-28 design doc.
 
-### When I need to understand how ttlMs affects tool freshness
+## ttlMs Freshness Semantics
 
-When a contributor is working on routing table refresh or client-side caching, they want to understand what the aggregated `ttlMs` means.
-
-**Cover:**
-- Aggregated `ttlMs` reflects worst-case staleness of the cached portion
-- `ttlMs:0` upstreams are always-fetched — they don't contribute to the aggregate
-- The aggregate is `min(non-zero ttlMs)` — bounds freshness to the most volatile upstream
-
-## Design Doc Update (`docs/design/overview.md`)
-
-### When I need to understand the broker's protocol handling architecture
-
-When a contributor is working on the broker, they want to understand the `ProtocolHandler` interface and how version-specific behavior is isolated.
-
-**Cover:**
-- `ProtocolHandler` interface and its two implementations
-- How to add 2026-specific broker behavior without touching shared code
-- What deleting `ProtocolHandler2025` removes when 2025 is dropped
+Covered in the design doc's constraints section and `AggregateCache` implementation. No separate doc needed — the rules are:
+- Aggregated `ttlMs` is `min(non-zero)` across upstreams — bounds freshness to the most volatile upstream
+- `ttlMs:0` upstreams are always-fetched and don't contribute to the aggregate
+- The aggregate is informational for clients; the broker's own freshness is backstopped by the manager's periodic re-list
 
 ## API Reference — No Changes
 

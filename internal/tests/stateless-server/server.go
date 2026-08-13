@@ -75,6 +75,31 @@ func RunServer(transport, port string) (StartupFunc, ShutdownFunc, error) {
 		InputSchema: map[string]any{"type": "object"},
 	}, stubToolHandler("run_pipeline"))
 
+	// add_tool dynamically adds a tool, triggering notifications/tools/list_changed
+	s.AddTool(&mcp.Tool{
+		Name:        "add_tool",
+		Description: "dynamically add a new tool (triggers notifications/tools/list_changed)",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"name":        map[string]any{"type": "string", "description": "tool name"},
+				"description": map[string]any{"type": "string", "description": "tool description"},
+			},
+			"required": []string{"name"},
+		},
+	}, addToolMCPHandler(s))
+
+	// trigger-elicitation-request returns InputRequiredResult on first call,
+	// completes when the client retries with InputResponses (MRTR pattern)
+	s.AddTool(&mcp.Tool{
+		Name:        "trigger-elicitation-request",
+		Description: "trigger an elicitation request from the server",
+		InputSchema: map[string]any{
+			"type":       "object",
+			"properties": map[string]any{},
+		},
+	}, elicitationToolHandler())
+
 	s.AddReceivingMiddleware(userToolFilterMiddleware(), cacheMetadataMiddleware())
 
 	// greeting prompt
@@ -102,6 +127,8 @@ func RunServer(transport, port string) (StartupFunc, ShutdownFunc, error) {
 			DisableLocalhostProtection: true,
 		})
 		mux.Handle("/mcp", logRequest(handler))
+		mux.HandleFunc("/admin/addTool", addToolHandler(s))
+		mux.HandleFunc("/admin/deleteTool", deleteToolHandler(s))
 
 		return func() error {
 				fmt.Printf("Serving stateless HTTPStreamable on http://localhost:%s/mcp\n", port)
@@ -222,19 +249,43 @@ func userToolFilterMiddleware() mcp.Middleware {
 				headers = extra.Header
 			}
 			auth := strings.ToLower(headers.Get("Authorization"))
-			allowed := map[string]bool{"hello_world": true, "headers": true}
-			if extras, ok := perUserTools[auth]; ok {
-				for _, name := range extras {
-					allowed[name] = true
+			if _, isPerUser := perUserTools[auth]; isPerUser {
+				allowed := make(map[string]bool)
+				for _, tool := range toolsResult.Tools {
+					allowed[tool.Name] = true
 				}
-			}
-			filtered := make([]*mcp.Tool, 0, len(allowed))
-			for _, tool := range toolsResult.Tools {
-				if allowed[tool.Name] {
-					filtered = append(filtered, tool)
+				// remove tools that belong to other users
+				for token, tools := range perUserTools {
+					if token == auth {
+						continue
+					}
+					for _, name := range tools {
+						delete(allowed, name)
+					}
 				}
+				filtered := make([]*mcp.Tool, 0, len(allowed))
+				for _, tool := range toolsResult.Tools {
+					if allowed[tool.Name] {
+						filtered = append(filtered, tool)
+					}
+				}
+				toolsResult.Tools = filtered
+			} else if auth == "" {
+				// no auth: hide per-user tools, show everything else
+				hidden := make(map[string]bool)
+				for _, tools := range perUserTools {
+					for _, name := range tools {
+						hidden[name] = true
+					}
+				}
+				filtered := make([]*mcp.Tool, 0, len(toolsResult.Tools))
+				for _, tool := range toolsResult.Tools {
+					if !hidden[tool.Name] {
+						filtered = append(filtered, tool)
+					}
+				}
+				toolsResult.Tools = filtered
 			}
-			toolsResult.Tools = filtered
 			if auth != "" {
 				toolsResult.CacheScope = "private"
 			}
@@ -292,8 +343,142 @@ func envStr(key, fallback string) string {
 	return fallback
 }
 
-// requireStringArg parses an argument with mark3labs RequireString
-// semantics: any string passes, including empty.
+func addToolMCPHandler(s *mcp.Server) mcp.ToolHandler {
+	return func(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		var args map[string]any
+		if err := json.Unmarshal(req.Params.Arguments, &args); err != nil {
+			return stubToolResult("invalid arguments"), err
+		}
+		name, _ := args["name"].(string)
+		if name == "" {
+			return stubToolResult("name required"), nil
+		}
+		desc, _ := args["description"].(string)
+		if desc == "" {
+			desc = "dynamically added tool"
+		}
+		log.Printf("add_tool: adding %q", name)
+		s.AddTool(&mcp.Tool{
+			Name:        name,
+			Description: desc,
+			InputSchema: map[string]any{"type": "object"},
+		}, stubToolHandler(name))
+		return stubToolResult(fmt.Sprintf("added tool %s", name)), nil
+	}
+}
+
+func stubToolResult(text string) *mcp.CallToolResult {
+	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: text}}}
+}
+
+func addToolHandler(s *mcp.Server) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		_ = r.Body.Close()
+		name := strings.TrimSpace(string(body))
+		if name == "" {
+			http.Error(w, "tool name required", http.StatusBadRequest)
+			return
+		}
+		log.Printf("admin: adding tool %q", name)
+		s.AddTool(&mcp.Tool{
+			Name:        name,
+			Description: "dynamically added tool",
+			InputSchema: map[string]any{"type": "object"},
+		}, stubToolHandler(name))
+		w.WriteHeader(http.StatusCreated)
+	}
+}
+
+func deleteToolHandler(s *mcp.Server) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		_ = r.Body.Close()
+		name := strings.TrimSpace(string(body))
+		if name == "" {
+			http.Error(w, "tool name required", http.StatusBadRequest)
+			return
+		}
+		log.Printf("admin: deleting tool %q", name)
+		s.RemoveTools(name)
+		w.WriteHeader(http.StatusOK)
+	}
+}
+
+func elicitationToolHandler() mcp.ToolHandler {
+	return func(_ context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		if len(req.Params.InputResponses) == 0 {
+			return &mcp.CallToolResult{
+				InputRequests: mcp.InputRequestMap{
+					"user_info": &mcp.ElicitParams{
+						Message: "Please provide your information",
+						RequestedSchema: map[string]any{
+							"type": "object",
+							"properties": map[string]any{
+								"name": map[string]any{
+									"type":        "string",
+									"description": "Your name",
+								},
+							},
+							"required": []string{"name"},
+						},
+					},
+				},
+				RequestState: "elicitation-pending",
+			}, nil
+		}
+
+		resp, ok := req.Params.InputResponses["user_info"]
+		if !ok {
+			return &mcp.CallToolResult{
+				InputRequests: mcp.InputRequestMap{
+					"user_info": &mcp.ElicitParams{Message: "Please provide your information (retry)"},
+				},
+				RequestState: req.Params.RequestState,
+			}, nil
+		}
+
+		elicitResult, ok := resp.(*mcp.ElicitResult)
+		if !ok || elicitResult == nil {
+			return &mcp.CallToolResult{
+				IsError: true,
+				Content: []mcp.Content{&mcp.TextContent{Text: "invalid elicitation response"}},
+			}, nil
+		}
+
+		switch elicitResult.Action {
+		case "decline", "cancel":
+			return &mcp.CallToolResult{
+				Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("User %sed the elicitation request", elicitResult.Action)}},
+			}, nil
+		default:
+			name, _ := elicitResult.Content["name"].(string)
+			if name == "" {
+				name = "unknown"
+			}
+			return &mcp.CallToolResult{
+				Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("User provided the requested information. Name: %s", name)}},
+			}, nil
+		}
+	}
+}
+
 func requireStringArg(args map[string]any, key string) (string, error) {
 	val, ok := args[key]
 	if !ok {

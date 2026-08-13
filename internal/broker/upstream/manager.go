@@ -105,6 +105,8 @@ type MCP interface {
 	ToolsCacheMetadata() CacheMetadata
 	// PromptsCacheMetadata returns cache metadata from the last prompts/list response.
 	PromptsCacheMetadata() CacheMetadata
+	// UsesStatelessProtocol returns true if the upstream negotiated 2026-07-28 or later.
+	UsesStatelessProtocol() bool
 }
 
 // ActiveMCPServer is the handle returned by Start. It exposes read-only
@@ -149,6 +151,7 @@ type ToolsAdderDeleter interface {
 	AddTools(tools ...GatewayTool)
 	DeleteTools(tools ...string)
 	ListTools() map[string]*GatewayTool
+	NotifyMetadataChanged()
 }
 
 // PromptsAdderDeleter defines the interface for managing prompts on the gateway server
@@ -225,14 +228,15 @@ type MCPManager struct {
 	// invalidToolPolicy controls behavior when upstream tools have invalid schemas
 	invalidToolPolicy InvalidToolPolicy
 
-	// toolEvents and promptEvents funnel notifications into the Start() loop.
-	// Separate channels with buffer of 1 each ensure a tool notification cannot
-	// block a prompt notification (or vice versa) while still coalescing rapid
-	// same-type notifications.
-	toolEvents   chan struct{}
-	promptEvents chan struct{}
-	done         chan struct{} // closed when the event loop exits
-	status       ServerValidationStatus
+	// toolEvents, promptEvents, and reconnectEvents funnel notifications into
+	// the Start() loop. Separate channels with buffer of 1 each ensure one
+	// event type cannot block another while still coalescing rapid same-type
+	// notifications.
+	toolEvents      chan struct{}
+	promptEvents    chan struct{}
+	reconnectEvents chan struct{}
+	done            chan struct{} // closed when the event loop exits
+	status          ServerValidationStatus
 
 	// consecutiveFailures counts connect/ping failures since the last
 	// healthy pass. only touched from the event loop goroutine.
@@ -318,6 +322,7 @@ func NewUpstreamMCPManager(upstream MCP, gatewayServer ToolsAdderDeleter, prompt
 		invalidToolPolicy:  policy,
 		toolEvents:         make(chan struct{}, 1),
 		promptEvents:       make(chan struct{}, 1),
+		reconnectEvents:    make(chan struct{}, 1),
 		done:               make(chan struct{}),
 		toolsMap:           map[string]*mcp.Tool{},
 		servedToolsMap:     map[string]*mcp.Tool{},
@@ -369,6 +374,9 @@ func (man *MCPManager) Start(ctx context.Context) ActiveMCPServer {
 			case <-man.promptEvents:
 				man.logger.DebugContext(ctx, "received prompt notification", "upstream mcp server", man.mcp.ID())
 				man.manage(ctx, eventTypePromptNotification)
+			case <-man.reconnectEvents:
+				man.logger.Info("reconnecting after connection loss", "upstream mcp server", man.mcp.ID())
+				man.manage(ctx, eventTypeTimer)
 			}
 		}
 	}()
@@ -432,8 +440,12 @@ func (man *MCPManager) registerCallbacks() func() {
 	})
 	return func() {
 		man.mcp.OnConnectionLost(func(err error) {
-			// just logging for visibility as will be re-connected on next tick
-			man.logger.Error("connection lost", "upstream mcp server", man.mcp.ID(), "error", err)
+			man.logger.Error("connection lost, clearing session for reconnect", "upstream mcp server", man.mcp.ID(), "error", err)
+			_ = man.mcp.Disconnect()
+			select {
+			case man.reconnectEvents <- struct{}{}:
+			default:
+			}
 		})
 	}
 }
@@ -465,7 +477,16 @@ func (man *MCPManager) manage(ctx context.Context, event eventType) {
 
 	numberOfTools := len(man.tools)
 	numberOfPrompts := len(man.prompts)
-	// during connect the client will validate the protocol. So we don't have a separate validate requirement currently. If a client already exists it will be re-used.
+
+	// 2026 upstreams rely on subscriptions/listen for notifications. the SDK
+	// silently drops the listen stream when the upstream restarts without
+	// closing the session, so the broker never learns notifications stopped.
+	// force a fresh connection on each health tick to re-establish the stream.
+	if event == eventTypeTimer && man.mcp.UsesStatelessProtocol() {
+		man.logger.DebugContext(ctx, "recycling stateless connection", "upstream mcp server", man.mcp.ID())
+		_ = man.mcp.Disconnect()
+	}
+
 	man.logger.DebugContext(ctx, "attempting to connect", "upstream mcp server", man.mcp.ID())
 	if err := man.mcp.Connect(ctx, man.registerCallbacks()); err != nil {
 		man.handleConnectionFailure(ctx, span, fmt.Errorf("failed to connect to upstream mcp %s : %w", man.mcp.ID(), err), numberOfTools, numberOfPrompts)
@@ -497,6 +518,7 @@ func (man *MCPManager) manage(ctx context.Context, event eventType) {
 		man.logger.DebugContext(ctx, "not fetching tools", "event", event, "upstream mcp server", man.mcp.ID(), "waiting for notification", notificationToolsListChanged)
 	} else {
 		man.logger.DebugContext(ctx, "fetching tools", "upstream mcp server", man.mcp.ID())
+		metaBefore := man.mcp.ToolsCacheMetadata()
 		start := time.Now()
 		current, fetched, err := man.getTools(ctx)
 		man.discoveryDuration.Record(ctx, time.Since(start).Seconds(), metric.WithAttributes(serverAttr))
@@ -557,6 +579,16 @@ func (man *MCPManager) manage(ctx context.Context, event eventType) {
 					}
 					if len(toAdd) > 0 {
 						man.gatewayServer.AddTools(toAdd...)
+					}
+					// tool add/remove triggers onTableChange via the gateway server.
+					// if tools didn't change but cache metadata did (e.g. scope
+					// flipped public→private), notify explicitly so the broker
+					// rebuilds freshFetchServers.
+					if len(toAdd) == 0 && len(toRemove) == 0 {
+						metaAfter := man.mcp.ToolsCacheMetadata()
+						if metaBefore.TTLMs != metaAfter.TTLMs || metaBefore.CacheScope != metaAfter.CacheScope {
+							man.gatewayServer.NotifyMetadataChanged()
+						}
 					}
 					man.logger.DebugContext(ctx, "internal tools", "upstream mcp server", man.mcp.ID(), "total", len(man.serverTools))
 				}

@@ -148,85 +148,113 @@ Implement the 2026 protocol handler:
 
 ## Task 5: Wire protocol handlers into broker ✅
 
-**Files:** `internal/broker/broker.go`, `internal/broker/user_specific_tools.go`, `internal/broker/protocol_filter.go`, `internal/broker/cache_aggregation.go` (new), `internal/broker/cache_aggregation_test.go` (new), `internal/broker/http_compat_test.go`, `internal/broker/protocol_filter_test.go`, `internal/tests/stateless-server/server.go`, `tests/e2e/dual_protocol_test.go`, `tests/e2e/test_cases.md`
+**Files:** `internal/broker/broker.go`, `internal/broker/user_specific_tools.go`, `internal/broker/protocol_filter.go`, `internal/broker/cache_aggregation.go` (new), `internal/broker/cache_aggregation_test.go` (new), `internal/broker/discovery.go`, `internal/broker/gateway_server.go`, `internal/broker/session_resurrection.go`, `internal/broker/http_compat_test.go`, `internal/broker/protocol_filter_test.go`, `internal/broker/upstream/manager.go`, `internal/tests/stateless-server/server.go`, `tests/e2e/dual_protocol_test.go`, `tests/e2e/test_cases.md`
 
 Integrate `ProtocolHandler` into the broker:
 
 - Add `handler2025 ProtocolHandler` and `handler2026 ProtocolHandler` fields to `mcpBrokerImpl`
 - Construct handlers in `NewBroker`
-- In `startManagers`: rebuild `userSpecificServers` using `ShouldFetchFresh` from the 2026 handler based on upstream cache metadata. 2026 upstreams with `cacheScope:"private"` or `ttlMs:0` join the list alongside CRD-declared `userSpecificList` servers
+- CRD-declared `userSpecificList` servers precomputed in `startManagers`; 2026 cache-metadata-driven servers (`cacheScope:"private"` or `ttlMs:0`) precomputed in `rebuildProtocolCaches` as `freshFetchServers` on `protocolCacheEntry` — avoids per-request iteration and races with connecting managers
+- `FetchUserSpecificTools` reads `freshFetchServers` from the stateless tools cache for 2026 clients
 - In `filteringMiddleware` `tools/list` case: **before** `FilterTools` (which strips `kuadrant/id`), call `AggregateCache` on the 2026 handler with contributing upstreams' metadata and set `result.TTLMs` and `result.CacheScope`
-- In `filteringMiddleware` `prompts/list` case: filter prompts by protocol version via `promptsForProtocol` (mirroring `toolsForProtocol`), then apply cache aggregation before `FilterPrompts`
+- In `filteringMiddleware` `prompts/list` case: filter prompts by protocol version via `promptsForProtocol`, then apply cache aggregation before `FilterPrompts`
 - Renamed `rebuildProtocolToolCache` to `rebuildProtocolCaches`, added prompt partitioning alongside tools
-- Added `promptsForProtocol` and `statefulPrompts`/`statelessPrompts` atomic caches
-- Refactored `FetchUserSpecificTools` to delegate to the protocol handler selected by client version header
-- Tools and prompts without `kuadrant/id` are excluded from all protocol sets with a warn log (not silently defaulted to stateful)
+- `protocolCacheEntry[T]` generic struct holds items, contributing serverIDs (for cache aggregation without per-tool Meta extraction), and `freshFetchServers` (for 2026 per-request fetch without per-request iteration)
+- `toolsForProtocol` / `promptsForProtocol` take `isStateless bool` instead of full headers
+- `isStatelessProtocol(headers)` centralises the version check for future extensibility
+- `getVisibleToolNames` simplified to use `toolsForProtocol` instead of `collectAllPrefixedTools` (removed)
+- `NotifyMetadataChanged()` added to `ToolsAdderDeleter` interface — manager calls it when cache metadata changes without a tool diff, triggering `rebuildProtocolCaches` to recompute `freshFetchServers`
+- Tools and prompts without `kuadrant/id` are excluded from all protocol sets with a warn log
 - `AggregateCache` returns `"public"` (not empty string) for empty input — the SDK serializes `cacheScope` without `omitempty`
 - Exported `upstream.GatewayServerID` constant for cross-package use
-- Added cache metadata middleware to the stateless test server (env-configurable `TTLMs`/`CacheScope`)
+- Added cache metadata middleware to the stateless test server (env-configurable `TTLMs`/`CacheScope`, auto-private when Authorization present)
+- Updated `docs/design/overview.md` and `docs/design/security-architecture.md` for dual-protocol and cacheScope security properties
 
 **Acceptance criteria:**
 - [x] Broker holds two `ProtocolHandler` instances
-- [x] `userSpecificServers` includes 2026 upstreams with `cacheScope:"private"` or `ttlMs:0`
+- [x] `freshFetchServers` includes 2026 upstreams with `cacheScope:"private"` or `ttlMs:0`
+- [x] `freshFetchServers` rebuilt when cache metadata changes without tool changes (`NotifyMetadataChanged`)
 - [x] 2026 `tools/list` responses include aggregated `ttlMs` and `cacheScope`
 - [x] 2025 `tools/list` responses unchanged (compat handler strips fields)
 - [x] `prompts/list` filtered by protocol version — 2026 clients only see prompts from 2026-capable upstreams
 - [x] `prompts/list` responses include aggregated fields for 2026 clients
 - [x] 2025 `prompts/list` responses unchanged
 - [x] Existing `user_specific_tools_test.go`, `protocol_filter_test.go` tests pass
-- [x] Unit test: 2026 `prompts/list` excludes 2025-only prompts
+- [x] No data races (`make test-unit` runs with `-race`)
 - [x] `make lint && make test-unit` passes
 - [x] `make test-controller-integration` passes
 
 **Verification:** `make lint && make test-unit && make test-controller-integration`
 
-## Task 6: subscriptions/listen for 2026 upstreams
+## Task 6: subscriptions/listen for 2026 upstreams ✅
 
-**Files:** `internal/broker/upstream/mcp.go`, `internal/broker/upstream/subscriptions_listener.go` (new), `internal/broker/upstream/subscriptions_listener_test.go` (new), `internal/broker/protocol_handler_2026.go`
+**Files:** `internal/broker/upstream/mcp.go`, `internal/broker/protocol_handler.go`, `internal/broker/protocol_handler_2025.go`, `internal/broker/protocol_handler_2026.go`, `internal/tests/stateless-server/server.go`, `internal/tests/stateless-server/server_test.go`, `tests/e2e/dual_protocol_test.go`, `tests/e2e/mcp_client.go`
 
-Replace GET SSE `notificationWatcher` with SDK `subscriptions/listen` for 2026 upstreams:
+Enable the SDK's built-in `subscriptions/listen` for 2026 upstreams. No custom `subscriptionsListener` needed — the SDK opens the stream automatically during `Connect` when notification handlers are set on the client.
 
-- Create `subscriptionsListener` that uses the SDK client's `SubscriptionsListen` to subscribe to `toolsListChanged` and `promptsListChanged`
-- Same backoff/retry semantics as `notificationWatcher`
-- Same `notify` callback interface so the manager's event loop is unchanged
-- In `MCPServer.Connect`: select notification mechanism based on `UsesStatelessProtocol()`
-- Wire `ProtocolHandler2026.StartNotificationWatcher` to use `subscriptionsListener`
+- Set `ToolListChangedHandler` and `PromptListChangedHandler` on `mcp.ClientOptions` so the SDK opens `subscriptions/listen` for 2026 upstreams
+- Skip `startNotificationWatcher` (GET SSE) for 2026 upstreams — they use the SDK's stream instead
+- The existing receiving middleware already intercepts `notifications/tools/list_changed` and `notifications/prompts/list_changed` and calls `up.notify(method)`, so the manager event loop works without changes
 - 2025 upstreams continue using `notificationWatcher` unchanged
+- `DisableStandaloneSSE: true` stays — it prevents the SDK's GET SSE (irrelevant to `subscriptions/listen`)
+- `StartNotificationWatcher` removed from `ProtocolHandler` interface — both protocols handle notifications inside `MCPServer.Connect`, not through the handler
+- Add `/admin/addTool` and `/admin/deleteTool` endpoints to the stateless test server so e2e tests can trigger `tools/list_changed` over `subscriptions/listen`
+- E2E test: add tool via admin endpoint, verify broker picks up the change AND the connected 2026 client receives a `tools/list_changed` notification
 
 **Acceptance criteria:**
-- [ ] `subscriptionsListener` subscribes to `toolsListChanged` and `promptsListChanged`
-- [ ] 2026 upstreams use `subscriptionsListener` instead of `notificationWatcher`
-- [ ] 2025 upstreams continue using `notificationWatcher`
-- [ ] Manager event loop processes notifications from both mechanisms identically
-- [ ] Unit test: subscriptions listener triggers tool refresh
-- [ ] `make lint && make test-unit` passes
+- [x] SDK opens `subscriptions/listen` for 2026 upstreams automatically
+- [x] 2026 upstreams do not start `notificationWatcher` (GET SSE)
+- [x] 2025 upstreams continue using `notificationWatcher`
+- [x] Manager event loop processes notifications from both mechanisms identically
+- [x] Stateless test server supports `add_tool` MCP tool and `/admin/addTool`, `/admin/deleteTool` HTTP endpoints
+- [x] E2E test: 2026 upstream tool change propagates to broker and triggers client notification
+- [x] `StartNotificationWatcher` removed from `ProtocolHandler` interface
+- [x] `make lint && make test-unit` passes
 
 **Verification:** `make lint && make test-unit`
 
 **CHECKPOINT: full feature functional. Both protocol paths work with correct cache aggregation and notification mechanisms.**
 
-## Task 7: E2E test cases
+## Task 7: E2E test cases ✅
 
 **Files:** `docs/design/broker-2026-07-28/tasks/test_cases.md`, `tests/e2e/test_cases.md` (update)
 
-Write integration and e2e test cases per `test_cases.md`.
+Documented and verified test coverage against design goals G1-G6.
+
+**Coverage summary:**
+- G1 (ttlMs/cacheScope on list responses): covered by `[Happy,Broker2026]` tools/list and prompts/list e2e tests
+- G2 (cacheScope private triggers per-user): unit-tested (`TestFreshFetchServers_*`); e2e gap noted — needs stateless server with `MCP_TOOLS_CACHE_SCOPE=private` without CRD flag
+- G3 (subscriptions/listen): covered by `[Broker2026] upstream tool change propagates` e2e test
+- G4 (2025 unchanged): covered by `[Happy,Broker2026] 2025 client tools/list has no ttlMs` e2e test
+- G5 (interface isolation): architecture, no e2e needed
+- G6 (prompts filtered): covered by `[Happy,Broker2026] prompts/list excludes 2025-only prompts` e2e test
+
+**Gaps documented:**
+- `[Happy,Broker2026] cacheScope private triggers per-user tool fetch` — unit-tested, e2e not yet implemented
+- `[Broker2026,Security] Private scope prevents cross-user tool list leak` — not yet implemented, requires AuthPolicy
 
 **Acceptance criteria:**
-- [ ] Integration test cases documented for aggregation logic, ShouldFetchFresh, and middleware behavior
-- [ ] E2E test cases documented for full-stack flows
-- [ ] E2E cases added to `tests/e2e/test_cases.md`
-- [ ] Cases cover all job stories from the design doc
+- [x] Integration test cases documented for aggregation logic, ShouldFetchFresh, and middleware behavior
+- [x] E2E test cases documented for full-stack flows
+- [x] E2E cases added to `tests/e2e/test_cases.md`
+- [x] Cases cover all job stories from the design doc (gaps documented with status)
 
-**Verification:** Review test cases cover goals G1-G5.
+**Verification:** Review test cases cover goals G1-G6.
 
-## Task 8: Documentation
+## Task 8: Documentation ✅
 
-**Files:** `docs/design/broker-2026-07-28/tasks/documentation.md`
+**Files:** `docs/design/broker-2026-07-28/tasks/documentation.md`, `docs/design/overview.md`, `docs/design/security-architecture.md`
 
-Documentation plan per `documentation.md`.
+No new user-facing guide required — the feature is transparent to operators. Documentation updates completed in task 5:
+
+- `docs/design/security-architecture.md`: added `cacheScope` correctness (pessimistic aggregation), `filterUserHeaders` credential stripping, broker→upstream per-user fetch boundary in data crossing table
+- `docs/design/overview.md`: added dual-protocol support to broker responsibilities with pointer to design doc
+- `docs/design/broker-2026-07-28/tasks/documentation.md`: updated with completion status
+- No API reference changes (`userSpecificList` stays for backward compat, no new CRD fields)
 
 **Acceptance criteria:**
-- [ ] Documentation plan covers user-facing changes
-- [ ] Security architecture updated for cache scope trust model
+- [x] Documentation plan covers user-facing changes (none needed — feature is transparent)
+- [x] Security architecture updated for cache scope trust model
+- [x] Overview updated for dual-protocol support
 
 **Verification:** Review documentation plan covers all user-facing behavior.
