@@ -27,10 +27,15 @@ const (
 	a2aMethodOther           = "other"
 )
 
-// a2aErrParse is JSON-RPC's parse-error code, returned when an /a2a POST body is
-// not valid JSON-RPC — the request fails closed rather than reaching the agent
-// without the metadata this phase exists to record.
-const a2aErrParse = -32700
+// JSON-RPC error codes for /a2a requests that fail closed rather than reaching the
+// agent without the metadata this phase records: a2aErrParse for a body that is not
+// valid JSON (or absent on a POST), a2aErrInvalidRequest for valid JSON that is not
+// a usable JSON-RPC request (no method to label). The gateway does not otherwise
+// validate the protocol version — the agent owns that.
+const (
+	a2aErrParse          = -32700
+	a2aErrInvalidRequest = -32600
+)
 
 // a2aInternalHeaders are the router-owned A2A headers. They are stripped from
 // every request before the router sets its own, so a client cannot pre-seed the

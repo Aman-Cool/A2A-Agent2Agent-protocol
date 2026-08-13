@@ -16,16 +16,16 @@ func newA2ATestServer(t *testing.T) *ExtProcServer {
 	return srv
 }
 
-// a2aHeadersStep builds a request-headers step for an /a2a request.
-func a2aHeadersStep(method, path string) mockProcessServerMessageAndErr {
+// a2aHeadersStep builds a POST request-headers step for /a2a/weather.
+func a2aHeadersStep() mockProcessServerMessageAndErr {
 	return mockProcessServerMessageAndErr{
 		msg: &extProcV3.ProcessingRequest{
 			Request: &extProcV3.ProcessingRequest_RequestHeaders{
 				RequestHeaders: &extProcV3.HttpHeaders{
 					Headers: &corev3.HeaderMap{
 						Headers: []*corev3.HeaderValue{
-							{Key: ":method", RawValue: []byte(method)},
-							{Key: ":path", RawValue: []byte(path)},
+							{Key: ":method", RawValue: []byte("POST")},
+							{Key: ":path", RawValue: []byte("/a2a/weather")},
 							{Key: "content-type", RawValue: []byte("application/json")},
 							// a client-supplied value the router must strip
 							{Key: headers.A2AAgentHeader, RawValue: []byte("spoofed")},
@@ -85,7 +85,7 @@ func a2aBodyStep(body string, resp *extProcV3.ProcessingResponse) mockProcessSer
 func TestProcess_A2APassthrough_SetsHeaders(t *testing.T) {
 	srv := newA2ATestServer(t)
 	mock := makeMockProcessServer(t, []mockProcessServerMessageAndErr{
-		a2aHeadersStep("POST", "/a2a/weather"),
+		a2aHeadersStep(),
 		a2aBodyStep(`{"jsonrpc":"2.0","id":1,"method":"SendMessage","params":{"message":{}}}`, a2aMethodBodyResp("SendMessage")),
 		responseHeadersStep(),
 	})
@@ -96,7 +96,7 @@ func TestProcess_A2APassthrough_SetsHeaders(t *testing.T) {
 func TestProcess_A2APassthrough_UnknownMethodNormalized(t *testing.T) {
 	srv := newA2ATestServer(t)
 	mock := makeMockProcessServer(t, []mockProcessServerMessageAndErr{
-		a2aHeadersStep("POST", "/a2a/weather"),
+		a2aHeadersStep(),
 		// an unknown method is normalized to "other" so the label stays bounded
 		a2aBodyStep(`{"jsonrpc":"2.0","id":1,"method":"ListTasks"}`, a2aMethodBodyResp("other")),
 		responseHeadersStep(),
@@ -108,21 +108,64 @@ func TestProcess_A2APassthrough_UnknownMethodNormalized(t *testing.T) {
 func TestProcess_A2APassthrough_FailsClosedOnUnparseableBody(t *testing.T) {
 	srv := newA2ATestServer(t)
 	mock := makeMockProcessServer(t, []mockProcessServerMessageAndErr{
-		a2aHeadersStep("POST", "/a2a/weather"),
+		a2aHeadersStep(),
 		// an unparseable body is rejected with a JSON-RPC error, never forwarded
-		a2aBodyStep(`{not json`, &extProcV3.ProcessingResponse{
-			Response: &extProcV3.ProcessingResponse_ImmediateResponse{
-				ImmediateResponse: &extProcV3.ImmediateResponse{
-					Body:   []byte("dummy"),
-					Status: &typev3.HttpStatus{Code: typev3.StatusCode_OK},
-					Headers: &extProcV3.HeaderMutation{
-						SetHeaders: []*corev3.HeaderValueOption{
-							{Header: &corev3.HeaderValue{Key: "content-type", RawValue: []byte("application/json")}},
+		a2aBodyStep(`{not json`, a2aImmediateJSON()),
+	})
+	require.NoError(t, srv.Process(mock))
+	mock.verifyAllResponsesConsumed()
+}
+
+// a2aImmediateJSON is the expected shape for an A2A fail-closed JSON-RPC error.
+func a2aImmediateJSON() *extProcV3.ProcessingResponse {
+	return &extProcV3.ProcessingResponse{
+		Response: &extProcV3.ProcessingResponse_ImmediateResponse{
+			ImmediateResponse: &extProcV3.ImmediateResponse{
+				Body:   []byte("dummy"),
+				Status: &typev3.HttpStatus{Code: typev3.StatusCode_OK},
+				Headers: &extProcV3.HeaderMutation{
+					SetHeaders: []*corev3.HeaderValueOption{
+						{Header: &corev3.HeaderValue{Key: "content-type", RawValue: []byte("application/json")}},
+					},
+				},
+			},
+		},
+	}
+}
+
+// a body that is valid JSON but not a usable JSON-RPC request (no method to label)
+// is rejected rather than forwarded to the agent labeled "other".
+func TestProcess_A2APassthrough_FailsClosedOnEmptyMethod(t *testing.T) {
+	srv := newA2ATestServer(t)
+	mock := makeMockProcessServer(t, []mockProcessServerMessageAndErr{
+		a2aHeadersStep(),
+		a2aBodyStep(`{}`, a2aImmediateJSON()),
+	})
+	require.NoError(t, srv.Process(mock))
+	mock.verifyAllResponsesConsumed()
+}
+
+// a POST with no body (EndOfStream on headers) has no request-body phase, so
+// x-a2a-method would never be set — it is rejected at the header phase.
+func TestProcess_A2APassthrough_FailsClosedOnBodylessPost(t *testing.T) {
+	srv := newA2ATestServer(t)
+	mock := makeMockProcessServer(t, []mockProcessServerMessageAndErr{
+		{
+			msg: &extProcV3.ProcessingRequest{
+				Request: &extProcV3.ProcessingRequest_RequestHeaders{
+					RequestHeaders: &extProcV3.HttpHeaders{
+						EndOfStream: true, // POST with no body
+						Headers: &corev3.HeaderMap{
+							Headers: []*corev3.HeaderValue{
+								{Key: ":method", RawValue: []byte("POST")},
+								{Key: ":path", RawValue: []byte("/a2a/weather")},
+							},
 						},
 					},
 				},
 			},
-		}),
+			resp: []*extProcV3.ProcessingResponse{a2aImmediateJSON()},
+		},
 	})
 	require.NoError(t, srv.Process(mock))
 	mock.verifyAllResponsesConsumed()

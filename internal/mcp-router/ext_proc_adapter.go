@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -213,7 +214,7 @@ func (s *ExtProcServer) Process(stream extProcV3.ExternalProcessor_ProcessServer
 			mcpNameHeader = getSingleValueHeader(localRequestHeaders.Headers, "mcp-name")
 
 			span.End()
-			ctx, span = tracer().Start(ctx, "mcp-router.process",
+			ctx, span = tracer().Start(ctx, "mcp-router.process", //nolint:spancheck // ended via defer closure
 				trace.WithAttributes(
 					componentAttr,
 					attribute.String("http.method", method),
@@ -232,6 +233,21 @@ func (s *ExtProcServer) Process(stream extProcV3.ExternalProcessor_ProcessServer
 			// known at the body, so x-a2a-method is set there.
 			if s.EnableA2A && isA2APath(requestPath) {
 				isA2A = true
+				// a POST with no body has no request-body phase, so x-a2a-method would
+				// never be set — fail closed rather than forward it to the agent
+				// unlabeled. GET (discovery) legitimately has no body and passes through.
+				if method == http.MethodPost && endOfStream {
+					s.Logger.DebugContext(ctx, "[ext_proc] Process: A2A POST with no body, failing closed", "request id", requestID, "path", requestPath)
+					resp := responseBuilder.WithImmediateJSONRPCResponse(200, nil, a2aErrorBody(nil, a2aErrParse, "invalid json-rpc request"), "application/json").Build()
+					for _, response := range resp {
+						if err := stream.Send(response); err != nil {
+							s.Logger.ErrorContext(ctx, "error sending response", "error", err)
+							recordError(span, err, 500)
+							return err //nolint:spancheck // ended via defer closure
+						}
+					}
+					return nil
+				}
 				a2aHeaders := NewHeaders()
 				if agent := a2aAgentFromPath(requestPath); agent != "" {
 					a2aHeaders.WithCustomHeader(headers.A2AAgentHeader, agent)
@@ -309,11 +325,17 @@ func (s *ExtProcServer) Process(stream extProcV3.ExternalProcessor_ProcessServer
 			// phase records. The body is never mutated.
 			if isA2A {
 				method, _, parseErr := parseA2AMethod(body)
-				if parseErr != nil {
-					// fail closed: the immediate JSON-RPC error terminates the request,
-					// so nothing reaches the agent without the metadata this phase records
-					s.Logger.DebugContext(ctx, "[ext_proc] Process: A2A body not valid json-rpc, failing closed", "request id", requestID, "error", parseErr)
-					resp := responseBuilder.WithImmediateJSONRPCResponse(200, nil, a2aErrorBody(nil, a2aErrParse, "invalid json-rpc request"), "application/json").Build()
+				// fail closed on anything that isn't a usable JSON-RPC request: an
+				// unparseable body (-32700), or valid JSON with no method to label
+				// (-32600). The immediate response terminates the request, so nothing
+				// reaches the agent without the metadata this phase records.
+				if parseErr != nil || method == "" {
+					code := a2aErrParse
+					if parseErr == nil {
+						code = a2aErrInvalidRequest
+					}
+					s.Logger.DebugContext(ctx, "[ext_proc] Process: A2A body not a valid json-rpc request, failing closed", "request id", requestID, "error", parseErr)
+					resp := responseBuilder.WithImmediateJSONRPCResponse(200, nil, a2aErrorBody(nil, code, "invalid json-rpc request"), "application/json").Build()
 					for _, res := range resp {
 						if err := stream.Send(res); err != nil {
 							s.Logger.ErrorContext(ctx, "error sending response", "error", err)
