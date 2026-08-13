@@ -20,8 +20,10 @@ With the feature enabled, for any request whose path begins with `/a2a/`:
 - For POST requests it parses the JSON-RPC envelope and sets `x-a2a-method`, normalized to
   a bounded set — the known v1 methods (`SendMessage`, `SendStreamingMessage`, `GetTask`,
   `CancelTask`, `SubscribeToTask`) verbatim, and anything else as `other` — so the value is
-  safe to use as a metric label. An unparseable body is rejected at the router with a
-  JSON-RPC `-32700` error and never reaches the agent.
+  safe to use as a metric label. A POST that carries no usable JSON-RPC method is rejected
+  at the router and never reaches the agent unlabeled: an unparseable body, or a POST with
+  no body at all, fails closed with JSON-RPC `-32700`; a valid JSON body with no method
+  (for example `{}`) fails closed with `-32600`.
 - Everything else passes through untouched. The request is carried to the agent by your own
   HTTPRoute, not by the gateway.
 
@@ -60,7 +62,10 @@ kubectl get deployment mcp-gateway -n mcp-system \
 
 Author an HTTPRoute that matches the agent's `/a2a/{agent}` path and forwards to its
 backend. The first path segment is the agent identity that becomes `x-a2a-agent`. The
-route must attach to the same gateway listener the MCP Gateway extension targets.
+route must attach to the same gateway listener the MCP Gateway extension targets. When the
+route lives in a different namespace from the gateway (as below — the route is in `mcp-test`,
+the gateway in `gateway-system`), that listener must permit the route's namespace via its
+`allowedRoutes.namespaces`, otherwise the gateway will not accept the route.
 
 ```bash
 kubectl apply -f - <<'EOF'
@@ -102,8 +107,11 @@ the agent received, or the access log configured in Step 4.
 ## Step 3: Authorize per agent
 
 Attach an AuthPolicy that authenticates the bearer and authorizes on the router-set
-`x-a2a-agent` header, analogous to MCP's per-tool authorization. Scope authentication to
-POST so that public agent-card `GET` discovery is not gated.
+`x-a2a-agent` header, analogous to MCP's per-tool authorization. This example targets the
+shared gateway, so every rule is scoped to A2A traffic with a `request.path.startsWith('/a2a/')`
+predicate — otherwise the POST authentication rule would also apply to normal MCP requests.
+It is also scoped to POST so that public agent-card `GET` discovery is not gated. (Targeting a
+dedicated A2A listener or route section instead is an alternative to the path predicate.)
 
 ```bash
 kubectl apply -f - <<'EOF'
@@ -122,12 +130,14 @@ spec:
       'sso-server':
         when:
           - predicate: "request.method == 'POST'"
+          - predicate: "request.path.startsWith('/a2a/')"
         jwt:
           issuerUrl: https://keycloak.example.com/realms/agents
     authorization:
       'agent-access-check':
         when:
           - predicate: "request.method == 'POST'"
+          - predicate: "request.path.startsWith('/a2a/')"
           - predicate: "request.headers.exists(h, h == 'x-a2a-agent')"
         patternMatching:
           patterns:
@@ -187,12 +197,15 @@ it to the gateway keeps it to A2A traffic on the gateway. Because `x-a2a-method`
 to a bounded value set (known v1 methods, else `other`), it is also safe to use as a metric
 dimension, not just a log field.
 
-Verify the Telemetry was accepted:
+Verify the Telemetry exists, then send an A2A request and confirm the agent and method
+appear in the gateway pod's access log. Adjust the pod selector to match your gateway's
+Deployment (the label the Istio-managed gateway pod carries depends on your install):
 
 ```bash
-kubectl get telemetry a2a-access-log -n gateway-system -o name
-# then send an A2A request and confirm the agent and method appear in the gateway's access log:
-kubectl logs -n gateway-system -l gateway.networking.k8s.io/gateway-name=mcp-gateway --tail=20 | grep a2a
+kubectl get telemetry a2a-access-log -n gateway-system
+# send an A2A request, then read the gateway pod's logs and look for the x-a2a-* values,
+# e.g. the agent name you routed:
+kubectl -n gateway-system logs deployment/mcp-gateway-istio --tail=50 | grep weather
 ```
 
 ## Trust boundaries in this phase

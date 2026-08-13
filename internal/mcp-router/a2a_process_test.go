@@ -27,8 +27,9 @@ func a2aHeadersStep() mockProcessServerMessageAndErr {
 							{Key: ":method", RawValue: []byte("POST")},
 							{Key: ":path", RawValue: []byte("/a2a/weather")},
 							{Key: "content-type", RawValue: []byte("application/json")},
-							// a client-supplied value the router must strip
-							{Key: headers.A2AAgentHeader, RawValue: []byte("spoofed")},
+							// client-supplied values the router must strip before setting its own
+							{Key: headers.A2AAgentHeader, RawValue: []byte("spoofed-agent")},
+							{Key: headers.A2AMethodHeader, RawValue: []byte("spoofed-method")},
 						},
 					},
 				},
@@ -110,18 +111,19 @@ func TestProcess_A2APassthrough_FailsClosedOnUnparseableBody(t *testing.T) {
 	mock := makeMockProcessServer(t, []mockProcessServerMessageAndErr{
 		a2aHeadersStep(),
 		// an unparseable body is rejected with a JSON-RPC error, never forwarded
-		a2aBodyStep(`{not json`, a2aImmediateJSON()),
+		a2aBodyStep(`{not json`, a2aImmediateJSON(a2aErrParse)),
 	})
 	require.NoError(t, srv.Process(mock))
 	mock.verifyAllResponsesConsumed()
 }
 
-// a2aImmediateJSON is the expected shape for an A2A fail-closed JSON-RPC error.
-func a2aImmediateJSON() *extProcV3.ProcessingResponse {
+// a2aImmediateJSON is the expected shape for an A2A fail-closed JSON-RPC error with
+// the given code — the body is asserted exactly, so it distinguishes -32700 from -32600.
+func a2aImmediateJSON(code int) *extProcV3.ProcessingResponse {
 	return &extProcV3.ProcessingResponse{
 		Response: &extProcV3.ProcessingResponse_ImmediateResponse{
 			ImmediateResponse: &extProcV3.ImmediateResponse{
-				Body:   []byte("dummy"),
+				Body:   []byte(a2aErrorBody(nil, code, "invalid json-rpc request")),
 				Status: &typev3.HttpStatus{Code: typev3.StatusCode_OK},
 				Headers: &extProcV3.HeaderMutation{
 					SetHeaders: []*corev3.HeaderValueOption{
@@ -139,7 +141,7 @@ func TestProcess_A2APassthrough_FailsClosedOnEmptyMethod(t *testing.T) {
 	srv := newA2ATestServer(t)
 	mock := makeMockProcessServer(t, []mockProcessServerMessageAndErr{
 		a2aHeadersStep(),
-		a2aBodyStep(`{}`, a2aImmediateJSON()),
+		a2aBodyStep(`{"jsonrpc":"2.0","id":1,"method":""}`, a2aImmediateJSON(a2aErrInvalidRequest)),
 	})
 	require.NoError(t, srv.Process(mock))
 	mock.verifyAllResponsesConsumed()
@@ -164,7 +166,7 @@ func TestProcess_A2APassthrough_FailsClosedOnBodylessPost(t *testing.T) {
 					},
 				},
 			},
-			resp: []*extProcV3.ProcessingResponse{a2aImmediateJSON()},
+			resp: []*extProcV3.ProcessingResponse{a2aImmediateJSON(a2aErrParse)},
 		},
 	})
 	require.NoError(t, srv.Process(mock))
