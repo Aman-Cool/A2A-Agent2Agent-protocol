@@ -479,8 +479,12 @@ func (m *mcpBrokerImpl) filteringMiddleware() mcp.Middleware {
 				if !ok || resourcesResult == nil {
 					return result, nil
 				}
-				// no header extraction — resources are not user-specific in this phase
+				var headers http.Header
+				if extra := req.GetExtra(); extra != nil {
+					headers = extra.Header
+				}
 				m.FetchResources(ctx, resourcesResult)
+				m.FilterResources(ctx, headers, resourcesResult)
 			}
 
 			return result, nil
