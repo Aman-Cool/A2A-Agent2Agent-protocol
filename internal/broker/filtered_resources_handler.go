@@ -118,7 +118,7 @@ func stripResourcePrefix(authority, prefix string) string {
 }
 
 // resourceAuthorityFromURI extracts the authority (host) from a resource URI.
-// For malformed URIs, returns the URI unchanged.
+// For malformed URIs or URIs with no host, returns empty string.
 func resourceAuthorityFromURI(uri string) string {
 	u, err := url.Parse(uri)
 	if err != nil {
