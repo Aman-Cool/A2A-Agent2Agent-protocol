@@ -57,3 +57,4 @@ config/e2e/gateway-2.yaml
 config/e2e/gateway-elicitation.yaml
 config/e2e/gateway-shared.yaml
 config/e2e/kustomization.yaml
+mcp-broker-router

@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/Kuadrant/mcp-gateway/internal/routing"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
@@ -110,7 +111,7 @@ func stripResourcePrefix(authority, prefix string) string {
 	if prefix == "" {
 		return authority
 	}
-	separator := ensureSeparator(prefix)
+	separator := routing.EnsureSeparator(prefix)
 	if strings.HasPrefix(authority, separator) {
 		return authority[len(separator):]
 	}

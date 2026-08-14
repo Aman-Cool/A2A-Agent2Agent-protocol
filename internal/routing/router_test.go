@@ -1928,10 +1928,10 @@ func TestHandleResourceRead_SingleCharPrefix(t *testing.T) {
 			Build()
 	}
 
-	// Round-trip test: broker generates prefixed URI with ensureSeparator,
+	// Round-trip test: broker generates prefixed URI with EnsureSeparator,
 	// router should strip it back to original
 	originalURI := "ui://file.html"
-	brokerPrefixedURI := "ui://" + ensureSeparator("a") + "file.html"
+	brokerPrefixedURI := "ui://" + EnsureSeparator("a") + "file.html"
 
 	data := &MCPRequest{
 		ID:      ptr.To(0),

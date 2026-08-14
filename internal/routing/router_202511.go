@@ -165,6 +165,7 @@ func (r *Router202511) routeToolCall(ctx context.Context, table RoutingTable, mc
 
 	headers[MethodHeader] = mcpReq.Method
 	mcpReq.ServerName = serverInfo.Name
+	mcpReq.ServerPrefix = serverInfo.Prefix
 	upstreamToolName, _ := strings.CutPrefix(toolName, serverInfo.Prefix)
 	headers[ToolHeader] = upstreamToolName
 	mcpReq.ReWriteToolName(upstreamToolName)
@@ -338,7 +339,7 @@ func stripResourcePrefix(uri, prefix string) string {
 	if err != nil || u.Scheme != "ui" || u.Host == "" {
 		return uri
 	}
-	u.Host = strings.TrimPrefix(u.Host, ensureSeparator(prefix))
+	u.Host = strings.TrimPrefix(u.Host, EnsureSeparator(prefix))
 	return u.String()
 }
 

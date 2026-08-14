@@ -123,7 +123,7 @@ func TestFilterResources(t *testing.T) {
 
 			headers := http.Header{}
 			if tc.jwtClaim != "" {
-				headers.Set("x-mcp-authorized", tc.jwtClaim)
+				headers.Set("X-Mcp-Authorized", tc.jwtClaim)
 			}
 
 			result := &mcp.ListResourcesResult{
@@ -195,7 +195,7 @@ func (m *mockResourceServer) PromptsCacheMetadata() upstream.CacheMetadata {
 }
 func (m *mockResourceServer) SupportsResources() bool { return false }
 func (m *mockResourceServer) ListResources(context.Context) (*mcp.ListResourcesResult, error) {
-	return nil, nil
+	return &mcp.ListResourcesResult{}, nil
 }
 
 func createTestResourcesJWT(t *testing.T, allowedResources map[string][]string) string {

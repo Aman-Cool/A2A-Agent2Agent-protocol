@@ -91,6 +91,7 @@ type MCPRequest struct {
 	Headers           map[string]string `json:"-"`
 	SessionID         string            `json:"-"`
 	ServerName        string            `json:"-"`
+	ServerPrefix      string            `json:"-"`
 	BackendSessionID  string            `json:"-"`
 	ClientElicitation bool              `json:"-"`
 }
@@ -321,9 +322,9 @@ func ResourceAuthority(uri string) string {
 	return u.Host
 }
 
-// ensureSeparator returns prefix with trailing underscore, adding one if needed.
+// EnsureSeparator returns prefix with trailing underscore, adding one if needed.
 // Empty prefix is returned unchanged.
-func ensureSeparator(prefix string) string {
+func EnsureSeparator(prefix string) string {
 	if prefix == "" {
 		return prefix
 	}

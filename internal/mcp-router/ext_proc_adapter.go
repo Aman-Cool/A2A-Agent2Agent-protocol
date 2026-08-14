@@ -162,15 +162,19 @@ func (s *ExtProcServer) Process(stream extProcV3.ExternalProcessor_ProcessServer
 		mcpRequest          *routing.MCPRequest
 		ctx                 = stream.Context()
 		rewriter            *elicitationRewriter // nil until a tool call response arrives
+		resourceRewriter    *resourceURIRewriter // nil until a tool call response with resources arrives
 	)
 	span := trace.SpanFromContext(ctx)
 	defer func() { span.End() }()
-	// ensure orphaned elicitation idmap entries are cleaned up on any exit path
+	// ensure orphaned elicitation idmap entries and response mutations are cleaned up on any exit path
 	// (e.g. stream.Recv/Send errors before endOfStream). Flush is idempotent so
 	// this is a no-op on the happy path where it has already run.
 	defer func() {
 		if rewriter != nil {
 			_ = rewriter.Flush(ctx)
+		}
+		if resourceRewriter != nil {
+			_ = resourceRewriter.Flush(ctx)
 		}
 	}()
 	for {
@@ -446,6 +450,13 @@ func (s *ExtProcServer) Process(stream extProcV3.ExternalProcessor_ProcessServer
 					logger:     s.Logger,
 					gatewayIDs: make([]string, 0),
 				}
+				// also construct resourceURIRewriter for tool calls with resources on 200 responses
+				if mcpRequest.ServerPrefix != "" && statusCode == "200" {
+					resourceRewriter = &resourceURIRewriter{
+						prefix: mcpRequest.ServerPrefix,
+						logger: s.Logger,
+					}
+				}
 			}
 
 			for _, response := range responses {
@@ -469,6 +480,16 @@ func (s *ExtProcServer) Process(stream extProcV3.ExternalProcessor_ProcessServer
 
 				if endOfStream {
 					remaining := rewriter.Flush(ctx)
+					body = append(body, remaining...)
+				}
+
+			}
+
+			if resourceRewriter != nil {
+				body = resourceRewriter.Process(ctx, body)
+
+				if endOfStream {
+					remaining := resourceRewriter.Flush(ctx)
 					body = append(body, remaining...)
 				}
 
