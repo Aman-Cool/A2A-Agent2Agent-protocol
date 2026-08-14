@@ -161,7 +161,7 @@ func (s *ExtProcServer) Process(stream extProcV3.ExternalProcessor_ProcessServer
 		endOfStream         = false
 		mcpRequest          *routing.MCPRequest
 		ctx                 = stream.Context()
-		rewriter            *sseRewriter // nil until a tool call response arrives
+		rewriter            *elicitationRewriter // nil until a tool call response arrives
 	)
 	span := trace.SpanFromContext(ctx)
 	defer func() { span.End() }()
@@ -440,7 +440,7 @@ func (s *ExtProcServer) Process(stream extProcV3.ExternalProcessor_ProcessServer
 			responses := responseDecisionToResponse(respDecision)
 
 			if respDecision.StreamBody {
-				rewriter = &sseRewriter{
+				rewriter = &elicitationRewriter{
 					idMap:      s.ElicitationMap,
 					req:        mcpRequest,
 					logger:     s.Logger,

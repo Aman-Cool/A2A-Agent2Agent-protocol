@@ -98,7 +98,7 @@ func TestSSERewriter_Process(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			m, err := idmap.New()
 			require.NoError(t, err)
-			w := &sseRewriter{
+			w := &elicitationRewriter{
 				idMap:  m,
 				logger: logger,
 				req: &routing.MCPRequest{
@@ -140,7 +140,7 @@ func TestSSERewriter_Process_RewrittenIDIsValid(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 	m, err := idmap.New()
 	require.NoError(t, err)
-	w := &sseRewriter{
+	w := &elicitationRewriter{
 		idMap:  m,
 		logger: logger,
 		req: &routing.MCPRequest{
@@ -177,7 +177,7 @@ func TestSSERewriter_Process_MultipleElicitations(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 	m, err := idmap.New()
 	require.NoError(t, err)
-	w := &sseRewriter{
+	w := &elicitationRewriter{
 		idMap:  m,
 		logger: logger,
 		req: &routing.MCPRequest{
@@ -211,7 +211,7 @@ func TestSSERewriter_Flush(t *testing.T) {
 	t.Run("returns remaining buffer", func(t *testing.T) {
 		m, err := idmap.New()
 		require.NoError(t, err)
-		w := &sseRewriter{
+		w := &elicitationRewriter{
 			idMap:  m,
 			logger: logger,
 			req: &routing.MCPRequest{
@@ -232,7 +232,7 @@ func TestSSERewriter_Flush(t *testing.T) {
 	t.Run("cleans up gateway IDs from idmap", func(t *testing.T) {
 		m, err := idmap.New()
 		require.NoError(t, err)
-		w := &sseRewriter{
+		w := &elicitationRewriter{
 			idMap:  m,
 			logger: logger,
 			req: &routing.MCPRequest{
@@ -258,7 +258,7 @@ func TestSSERewriter_Flush(t *testing.T) {
 	t.Run("empty buffer returns nil", func(t *testing.T) {
 		m, err := idmap.New()
 		require.NoError(t, err)
-		w := &sseRewriter{
+		w := &elicitationRewriter{
 			idMap:  m,
 			logger: logger,
 			req: &routing.MCPRequest{
@@ -274,7 +274,7 @@ func TestSSERewriter_Flush(t *testing.T) {
 	t.Run("is idempotent across multiple calls", func(t *testing.T) {
 		m, err := idmap.New()
 		require.NoError(t, err)
-		w := &sseRewriter{
+		w := &elicitationRewriter{
 			idMap:  m,
 			logger: logger,
 			req: &routing.MCPRequest{
@@ -347,7 +347,7 @@ func TestSSERewriter_MaybeRewriteElicitation(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			m, err := idmap.New()
 			require.NoError(t, err)
-			w := &sseRewriter{
+			w := &elicitationRewriter{
 				idMap:  m,
 				logger: logger,
 				req: &routing.MCPRequest{
