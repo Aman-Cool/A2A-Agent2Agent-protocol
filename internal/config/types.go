@@ -157,6 +157,7 @@ func (mcpServer *MCPServer) ConfigChanged(existingConfig MCPServer) bool {
 		normalizeState(existingConfig.State) != normalizeState(mcpServer.State) ||
 		existingConfig.UserSpecificList != mcpServer.UserSpecificList ||
 		existingConfig.Hint != mcpServer.Hint ||
+		guardrailsConfigChanged(existingConfig.GuardrailsConfigIDs, mcpServer.GuardrailsConfigIDs) ||
 		tokenURLElicitationChanged(mcpServer.TokenURLElicitation, existingConfig.TokenURLElicitation) {
 		return true
 	}
@@ -195,6 +196,13 @@ func tokenURLElicitationChanged(a, b *TokenURLElicitationConfig) bool {
 		return false
 	}
 	return a.URL != b.URL
+}
+
+// guardrailsConfigChanged reports whether a server's per-server guardrails
+// config IDs changed. The router evaluates rails in the order the annotation
+// lists them.
+func guardrailsConfigChanged(a, b []string) bool {
+	return !slices.Equal(a, b)
 }
 
 // Path returns the path part of the mcp url

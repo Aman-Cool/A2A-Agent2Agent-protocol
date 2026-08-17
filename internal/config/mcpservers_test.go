@@ -456,6 +456,84 @@ func TestMCPServer_ConfigChanged(t *testing.T) {
 			},
 			expectChanged: false,
 		},
+		{
+			name: "guardrailsConfigIDs added",
+			current: &MCPServer{
+				Name:                "server1",
+				Prefix:              "s1_",
+				Hostname:            "server1.local",
+				GuardrailsConfigIDs: []string{"strict-input-checking"},
+			},
+			existing: MCPServer{
+				Name:     "server1",
+				Prefix:   "s1_",
+				Hostname: "server1.local",
+			},
+			expectChanged: true,
+		},
+		{
+			name: "guardrailsConfigIDs removed",
+			current: &MCPServer{
+				Name:     "server1",
+				Prefix:   "s1_",
+				Hostname: "server1.local",
+			},
+			existing: MCPServer{
+				Name:                "server1",
+				Prefix:              "s1_",
+				Hostname:            "server1.local",
+				GuardrailsConfigIDs: []string{"strict-input-checking"},
+			},
+			expectChanged: true,
+		},
+		{
+			name: "guardrailsConfigIDs changed",
+			current: &MCPServer{
+				Name:                "server1",
+				Prefix:              "s1_",
+				Hostname:            "server1.local",
+				GuardrailsConfigIDs: []string{"pii-detection"},
+			},
+			existing: MCPServer{
+				Name:                "server1",
+				Prefix:              "s1_",
+				Hostname:            "server1.local",
+				GuardrailsConfigIDs: []string{"strict-input-checking"},
+			},
+			expectChanged: true,
+		},
+		{
+			name: "guardrailsConfigIDs reordered triggers change",
+			current: &MCPServer{
+				Name:                "server1",
+				Prefix:              "s1_",
+				Hostname:            "server1.local",
+				GuardrailsConfigIDs: []string{"pii-detection", "strict-input-checking"},
+			},
+			existing: MCPServer{
+				Name:                "server1",
+				Prefix:              "s1_",
+				Hostname:            "server1.local",
+				GuardrailsConfigIDs: []string{"strict-input-checking", "pii-detection"},
+			},
+			expectChanged: true,
+		},
+		{
+			name: "guardrailsConfigIDs unchanged",
+			current: &MCPServer{
+				Name:                "server1",
+				Prefix:              "s1_",
+				Hostname:            "server1.local",
+				GuardrailsConfigIDs: []string{"strict-input-checking", "pii-detection"},
+			},
+			existing: MCPServer{
+				Name:                "server1",
+				Prefix:              "s1_",
+				Hostname:            "server1.local",
+				GuardrailsConfigIDs: []string{"strict-input-checking", "pii-detection"},
+			},
+			expectChanged: false,
+		},
 	}
 
 	for _, tc := range testCases {

@@ -63,10 +63,6 @@ const (
 	LogLevelWarn LogLevel = "warn"
 	// LogLevelError sets the broker-router --log-level flag to 8
 	LogLevelError LogLevel = "error"
-
-	// GuardrailsSecretNotFound is the reason seen when the guardrails secret referenced
-	// by the guardrails-ref annotation is not found
-	GuardrailsSecretNotFound = "GuardrailsSecretNotFound"
 )
 
 // MCPGatewayExtensionSpec defines the desired state of MCPGatewayExtension.
