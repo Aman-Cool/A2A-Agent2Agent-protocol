@@ -11,30 +11,33 @@ import (
 // It is built by the broker and swapped atomically so the router
 // always reads a consistent snapshot.
 type Table struct {
-	tools       map[string]*ServerRoute
-	prompts     map[string]*ServerRoute
-	prefixes    map[string]*ServerRoute // prefix → route for userSpecificList servers
-	brokerTools map[string]struct{}
-	annotations map[string]*ToolAnnotation // key: serverID + "/" + toolName
+	tools            map[string]*ServerRoute
+	prompts          map[string]*ServerRoute
+	prefixes         map[string]*ServerRoute // prefix → route for userSpecificList servers
+	resourcePrefixes map[string]*ServerRoute // prefix → route for resource-federated servers
+	brokerTools      map[string]struct{}
+	annotations      map[string]*ToolAnnotation // key: serverID + "/" + toolName
 }
 
 // TableBuilder accumulates entries for building a Table.
 type TableBuilder struct {
-	tools       map[string]*ServerRoute
-	prompts     map[string]*ServerRoute
-	prefixes    map[string]*ServerRoute
-	brokerTools map[string]struct{}
-	annotations map[string]*ToolAnnotation
+	tools            map[string]*ServerRoute
+	prompts          map[string]*ServerRoute
+	prefixes         map[string]*ServerRoute
+	resourcePrefixes map[string]*ServerRoute
+	brokerTools      map[string]struct{}
+	annotations      map[string]*ToolAnnotation
 }
 
 // NewTableBuilder creates a builder for constructing a Table.
 func NewTableBuilder() *TableBuilder {
 	return &TableBuilder{
-		tools:       make(map[string]*ServerRoute),
-		prompts:     make(map[string]*ServerRoute),
-		prefixes:    make(map[string]*ServerRoute),
-		brokerTools: make(map[string]struct{}),
-		annotations: make(map[string]*ToolAnnotation),
+		tools:            make(map[string]*ServerRoute),
+		prompts:          make(map[string]*ServerRoute),
+		prefixes:         make(map[string]*ServerRoute),
+		resourcePrefixes: make(map[string]*ServerRoute),
+		brokerTools:      make(map[string]struct{}),
+		annotations:      make(map[string]*ToolAnnotation),
 	}
 }
 
@@ -56,6 +59,14 @@ func (b *TableBuilder) AddPrefix(prefix string, route *ServerRoute) *TableBuilde
 	return b
 }
 
+// AddResourcePrefix registers a prefix → server route mapping for
+// resource-federated servers, used to resolve a resources/read URI's
+// authority segment back to its owning server.
+func (b *TableBuilder) AddResourcePrefix(prefix string, route *ServerRoute) *TableBuilder {
+	b.resourcePrefixes[prefix] = route
+	return b
+}
+
 // AddBrokerTool marks a tool name as a broker-internal meta-tool.
 func (b *TableBuilder) AddBrokerTool(name string) *TableBuilder {
 	b.brokerTools[name] = struct{}{}
@@ -72,15 +83,17 @@ func (b *TableBuilder) AddAnnotation(serverID, toolName string, annotation *Tool
 // The builder must not be reused after calling Build.
 func (b *TableBuilder) Build() *Table {
 	t := &Table{
-		tools:       maps.Clone(b.tools),
-		prompts:     maps.Clone(b.prompts),
-		prefixes:    maps.Clone(b.prefixes),
-		brokerTools: maps.Clone(b.brokerTools),
-		annotations: maps.Clone(b.annotations),
+		tools:            maps.Clone(b.tools),
+		prompts:          maps.Clone(b.prompts),
+		prefixes:         maps.Clone(b.prefixes),
+		resourcePrefixes: maps.Clone(b.resourcePrefixes),
+		brokerTools:      maps.Clone(b.brokerTools),
+		annotations:      maps.Clone(b.annotations),
 	}
 	b.tools = nil
 	b.prompts = nil
 	b.prefixes = nil
+	b.resourcePrefixes = nil
 	b.brokerTools = nil
 	b.annotations = nil
 	return t
@@ -119,6 +132,22 @@ func (t *Table) LookupPrefix(name string) (*ServerRoute, bool) {
 		}
 	}
 	return nil, false
+}
+
+// LookupResourcePrefix finds a server route by longest-prefix match against a
+// resource URI's authority segment. Mirrors the broker's
+// GetServerInfoByResource, which uses the same longest-prefix approach to
+// resolve ambiguous authorities (see resources-federation-design.md).
+func (t *Table) LookupResourcePrefix(authority string) (*ServerRoute, bool) {
+	var best *ServerRoute
+	bestLen := -1
+	for prefix, route := range t.resourcePrefixes {
+		if strings.HasPrefix(authority, prefix) && len(prefix) > bestLen {
+			best = route
+			bestLen = len(prefix)
+		}
+	}
+	return best, best != nil
 }
 
 // IsBrokerTool checks if tool name is broker meta-tool
