@@ -479,8 +479,12 @@ func (m *mcpBrokerImpl) filteringMiddleware() mcp.Middleware {
 				if !ok || resourcesResult == nil {
 					return result, nil
 				}
-				// no header extraction — resources are not user-specific in this phase
+				var headers http.Header
+				if extra := req.GetExtra(); extra != nil {
+					headers = extra.Header
+				}
 				m.FetchResources(ctx, resourcesResult)
+				m.FilterResources(ctx, headers, resourcesResult)
 			}
 
 			return result, nil
@@ -739,7 +743,7 @@ func (m *mcpBrokerImpl) GetServerInfoByResource(uri string) (*config.MCPServer, 
 	var found bool
 	for _, upstream := range m.mcpServers {
 		cfg := upstream.Config()
-		if cfg.Prefix != "" && strings.HasPrefix(authority, ensureSeparator(cfg.Prefix)) {
+		if cfg.Prefix != "" && strings.HasPrefix(authority, routing.EnsureSeparator(cfg.Prefix)) {
 			if !found || len(cfg.Prefix) > len(bestMatch.Prefix) {
 				bestMatch = cfg
 				found = true
@@ -952,19 +956,6 @@ func (m *mcpBrokerImpl) fetchResourcesFromServer(ctx context.Context, srv upstre
 	return out, nil
 }
 
-// ensureSeparator adds a trailing underscore to the prefix if it's non-empty
-// and doesn't already end with one. This prevents ambiguous concatenation:
-// "fast_slow" + "template.html" becomes "fast_slow_template.html", not "fast_slowtemplate.html".
-func ensureSeparator(prefix string) string {
-	if prefix == "" {
-		return prefix
-	}
-	if !strings.HasSuffix(prefix, "_") {
-		return prefix + "_"
-	}
-	return prefix
-}
-
 // rewriteResourceURI injects prefix into a ui:// URI's authority segment
 // (ui://template.html -> ui://<prefix_>template.html). Non-ui:// and
 // malformed URIs are returned unchanged, matching how the tools/call
@@ -975,7 +966,7 @@ func rewriteResourceURI(uri, prefix string) string {
 		return uri
 	}
 	u.User = nil // never forward upstream credentials to clients
-	u.Host = ensureSeparator(prefix) + u.Host
+	u.Host = routing.EnsureSeparator(prefix) + u.Host
 	return u.String()
 }
 

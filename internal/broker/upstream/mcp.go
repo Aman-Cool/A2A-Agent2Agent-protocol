@@ -548,6 +548,8 @@ func (up *MCPServer) ListTools(ctx context.Context) (*mcp.ListToolsResult, error
 
 // SupportsResources checks if the upstream server declared resource capabilities
 func (up *MCPServer) SupportsResources() bool {
+	up.clientMu.RLock()
+	defer up.clientMu.RUnlock()
 	if up.init == nil || up.init.Capabilities == nil {
 		return false
 	}

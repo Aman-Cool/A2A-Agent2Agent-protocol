@@ -10,6 +10,7 @@ type RoutingTable interface {
 	LookupTool(name string) (*ServerRoute, bool)
 	LookupPrompt(name string) (*ServerRoute, bool)
 	LookupPrefix(name string) (*ServerRoute, bool)
+	LookupResourcePrefix(authority string) (*ServerRoute, bool)
 	IsBrokerTool(name string) bool
 	ToolAnnotations(serverID, toolName string) (*ToolAnnotation, bool)
 	DumpTools() string

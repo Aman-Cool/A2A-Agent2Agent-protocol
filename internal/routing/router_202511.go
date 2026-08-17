@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -73,6 +74,9 @@ func (r *Router202511) RouteRequest(ctx context.Context, req *Request) *Decision
 	case mcpReq.Method == MethodPromptGet:
 		span.SetAttributes(attribute.String("mcp.route", "prompt-get"))
 		return r.routePromptGet(ctx, table, mcpReq)
+	case mcpReq.Method == MethodResourceRead:
+		span.SetAttributes(attribute.String("mcp.route", "resource-read"))
+		return r.routeResourceRead(ctx, table, mcpReq)
 	default:
 		span.SetAttributes(attribute.String("mcp.route", "broker"))
 		return r.routeBrokerPassthrough(ctx, mcpReq)
@@ -161,6 +165,7 @@ func (r *Router202511) routeToolCall(ctx context.Context, table RoutingTable, mc
 
 	headers[MethodHeader] = mcpReq.Method
 	mcpReq.ServerName = serverInfo.Name
+	mcpReq.ServerPrefix = serverInfo.Prefix
 	upstreamToolName, _ := strings.CutPrefix(toolName, serverInfo.Prefix)
 	headers[ToolHeader] = upstreamToolName
 	mcpReq.ReWriteToolName(upstreamToolName)
@@ -259,6 +264,83 @@ func (r *Router202511) routePromptGet(ctx context.Context, table RoutingTable, m
 	headers[MCPServerNameHeader] = serverInfo.Name
 
 	return r.routeToUpstream(ctx, span, mcpReq, serverInfo, headers)
+}
+
+// routeResourceRead routes a resources/read call to the upstream that owns
+// the requested URI, resolved by longest-prefix match against registered
+// resource-federated servers (mirrors the broker's GetServerInfoByResource).
+// Sets x-mcp-resourceuri alongside x-mcp-servername, the same way tool/prompt
+// routing sets their own name headers, so AuthPolicy can enforce access down
+// to the specific resource, not just the destination server.
+func (r *Router202511) routeResourceRead(ctx context.Context, table RoutingTable, mcpReq *MCPRequest) *Decision {
+	resourceURI := mcpReq.ResourceURI()
+
+	ctx, span := tracer().Start(ctx, "mcp-router.resource-read",
+		trace.WithAttributes(
+			componentAttr,
+			attribute.String("mcp.resource.uri", resourceURI),
+			attribute.String("mcp.session.id", internaljwt.LogSafeSessionID(mcpReq.GetSessionID())),
+		),
+	)
+	defer span.End()
+
+	if resourceURI == "" {
+		r.Logger.ErrorContext(ctx, "[EXT-PROC] HandleResourceRead no resource uri set in resources/read")
+		span.SetStatus(codes.Error, "no resource uri set")
+		span.SetAttributes(attribute.String("error.type", "missing_resource_uri"))
+		return &Decision{Error: &Error{StatusCode: 400, Message: "no resource uri set"}}
+	}
+
+	if sessionErr := r.validateSession(mcpReq.GetSessionID()); sessionErr != nil {
+		r.Logger.ErrorContext(ctx, "session validation failed", "session", internaljwt.LogSafeSessionID(mcpReq.GetSessionID()), "error", sessionErr)
+		mcpotel.SpanError(span, sessionErr, sessionErr.Error())
+		span.SetAttributes(attribute.String("error.type", "invalid_session"))
+		return &Decision{Error: &Error{StatusCode: int(sessionErr.Code()), Message: sessionErr.Error()}}
+	}
+
+	headers := make(map[string]string)
+	route, ok := table.LookupResourcePrefix(ResourceAuthority(resourceURI))
+	if !ok {
+		r.Logger.DebugContext(ctx, "no server for resource", "uri", resourceURI)
+		mcpotel.SpanError(span, fmt.Errorf("resource not found: %s", resourceURI), "resource not found")
+		span.SetAttributes(attribute.String("error.type", "resource_not_found"))
+		return &Decision{
+			Error: &Error{
+				StatusCode: 200,
+				JSONRPCErr: BuildSSEToolError(mcpReq.ID, "MCP error -32602: Resource not found"),
+			},
+			SetHeaders: map[string]string{
+				SessionHeader: mcpReq.GetSessionID(),
+			},
+		}
+	}
+	serverInfo := routeToMCPServer(route)
+
+	span.SetAttributes(
+		attribute.String("mcp.server", serverInfo.Name),
+		attribute.String("mcp.server.hostname", serverInfo.Hostname),
+	)
+
+	headers[MethodHeader] = mcpReq.Method
+	mcpReq.ServerName = serverInfo.Name
+	upstreamURI := stripResourcePrefix(resourceURI, serverInfo.Prefix)
+	headers[ResourceHeader] = upstreamURI
+	mcpReq.ReWriteResourceURI(upstreamURI)
+	headers[MCPServerNameHeader] = serverInfo.Name
+
+	return r.routeToUpstream(ctx, span, mcpReq, serverInfo, headers)
+}
+
+// stripResourcePrefix removes prefix from a ui:// URI's authority segment,
+// reconstructing the original upstream URI - the inverse of the broker's
+// rewriteResourceURI. Non-ui:// and malformed URIs are returned unchanged.
+func stripResourcePrefix(uri, prefix string) string {
+	u, err := url.Parse(uri)
+	if err != nil || u.Scheme != "ui" || u.Host == "" {
+		return uri
+	}
+	u.Host = strings.TrimPrefix(u.Host, EnsureSeparator(prefix))
+	return u.String()
 }
 
 func (r *Router202511) routeToUpstream(ctx context.Context, span trace.Span, mcpReq *MCPRequest, serverInfo *config.MCPServer, headers map[string]string) *Decision {
@@ -491,6 +573,9 @@ func (r *Router202511) initializeMCPServerSession(ctx context.Context, mcpReq *M
 		}
 		if promptName := mcpReq.PromptName(); promptName != "" {
 			passThroughHeaders["x-mcp-promptname"] = promptName
+		}
+		if resourceURI := mcpReq.ResourceURI(); resourceURI != "" {
+			passThroughHeaders[ResourceHeader] = resourceURI
 		}
 		passThroughHeaders["user-agent"] = "mcp-router"
 		if r.ElicitationEnabled && mcpServerConfig.TokenURLElicitation != nil {

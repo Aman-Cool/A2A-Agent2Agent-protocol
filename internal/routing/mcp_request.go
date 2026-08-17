@@ -43,9 +43,10 @@ func NewRouterErrorf(code int32, format string, args ...any) *RouterError {
 
 // mcp json-rpc method names and elicitation constants
 const (
-	MethodToolCall   = "tools/call"
-	MethodPromptGet  = "prompts/get"
-	MethodInitialize = "initialize"
+	MethodToolCall     = "tools/call"
+	MethodPromptGet    = "prompts/get"
+	MethodResourceRead = "resources/read"
+	MethodInitialize   = "initialize"
 
 	elicitationResultAction  = "action"
 	elicitationActionAccept  = "accept"
@@ -59,6 +60,7 @@ const (
 	ToolAnnotationsHeader = "x-mcp-annotation-hints"
 	ToolHeader            = "x-mcp-toolname"
 	PromptHeader          = "x-mcp-promptname"
+	ResourceHeader        = "x-mcp-resourceuri"
 	MethodHeader          = "x-mcp-method"
 	SessionHeader         = "mcp-session-id"
 	AuthorityHeader       = ":authority"
@@ -89,6 +91,7 @@ type MCPRequest struct {
 	Headers           map[string]string `json:"-"`
 	SessionID         string            `json:"-"`
 	ServerName        string            `json:"-"`
+	ServerPrefix      string            `json:"-"`
 	BackendSessionID  string            `json:"-"`
 	ClientElicitation bool              `json:"-"`
 }
@@ -224,6 +227,35 @@ func (mr *MCPRequest) ReWritePromptName(actualPrompt string) {
 	mr.Params["name"] = actualPrompt
 }
 
+// IsResourceRead checks if method is resources/read
+func (mr *MCPRequest) IsResourceRead() bool {
+	return mr.Method == MethodResourceRead
+}
+
+// ResourceURI extracts the resource uri from resources/read params
+func (mr *MCPRequest) ResourceURI() string {
+	if !mr.IsResourceRead() {
+		return ""
+	}
+	uri, ok := mr.Params["uri"]
+	if !ok {
+		return ""
+	}
+	u, ok := uri.(string)
+	if !ok {
+		return ""
+	}
+	return u
+}
+
+// ReWriteResourceURI replaces the resource uri in params
+func (mr *MCPRequest) ReWriteResourceURI(actualURI string) {
+	if mr.Params == nil {
+		mr.Params = map[string]any{}
+	}
+	mr.Params["uri"] = actualURI
+}
+
 // ToBytes marshals request to json
 func (mr *MCPRequest) ToBytes() ([]byte, error) {
 	return json.Marshal(mr)
@@ -288,4 +320,16 @@ func ResourceAuthority(uri string) string {
 		return uri
 	}
 	return u.Host
+}
+
+// EnsureSeparator returns prefix with trailing underscore, adding one if needed.
+// Empty prefix is returned unchanged.
+func EnsureSeparator(prefix string) string {
+	if prefix == "" {
+		return prefix
+	}
+	if !strings.HasSuffix(prefix, "_") {
+		return prefix + "_"
+	}
+	return prefix
 }

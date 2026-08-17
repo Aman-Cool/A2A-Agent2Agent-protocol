@@ -12,7 +12,7 @@ import (
 
 var dataPrefix = []byte("data:")
 
-// sseRewriter rewrites sse elicitation requests based on contents of idMap
+// elicitationRewriter rewrites sse elicitation requests based on contents of idMap
 // idMap entries are managed in the following way:
 //  1. Client calls tool
 //  2. Backend starts streaming response
@@ -22,7 +22,7 @@ var dataPrefix = []byte("data:")
 //  5. Backend receives the response, continues processing, sends the tool result
 //  6. Stream ends -> Flush() called -> Remove() is called on entries to clean up any orphaned elicitations,
 //     is noop for already removed keys
-type sseRewriter struct {
+type elicitationRewriter struct {
 	buf        []byte
 	idMap      idmap.Map
 	req        *routing.MCPRequest
@@ -33,7 +33,7 @@ type sseRewriter struct {
 // Process receives a chunk of SSE response data and rewrites any elicitation/create request IDs.
 // As SSE is a line-based protocol, splitting on \n ensures we only
 // parse and rewrite fully received JSON-RPC messages
-func (w *sseRewriter) Process(ctx context.Context, chunk []byte) []byte {
+func (w *elicitationRewriter) Process(ctx context.Context, chunk []byte) []byte {
 	w.buf = append(w.buf, chunk...)
 
 	var output []byte
@@ -60,7 +60,7 @@ func (w *sseRewriter) Process(ctx context.Context, chunk []byte) []byte {
 // Flush flushes the buffer and cleans up any gatewayIDs created by the rewriter
 // This allows us to deal with orphaned elicitation id mappings
 // Safe to call multiple times; subsequent calls are no-ops
-func (w *sseRewriter) Flush(ctx context.Context) []byte {
+func (w *elicitationRewriter) Flush(ctx context.Context) []byte {
 	remaining := w.buf
 	w.buf = nil
 	if len(remaining) > 0 {
@@ -84,7 +84,7 @@ type jsonRPCMessage struct {
 	Error   json.RawMessage `json:"error,omitempty"`
 }
 
-func (w *sseRewriter) maybeRewriteElicitation(ctx context.Context, line []byte) []byte {
+func (w *elicitationRewriter) maybeRewriteElicitation(ctx context.Context, line []byte) []byte {
 	trimmed := bytes.TrimSpace(line)
 	jsonData := bytes.TrimPrefix(trimmed, dataPrefix)
 	if len(jsonData) > 0 && jsonData[0] == ' ' {

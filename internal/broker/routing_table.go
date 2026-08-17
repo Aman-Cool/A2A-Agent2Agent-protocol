@@ -33,6 +33,13 @@ func (m *mcpBrokerImpl) buildRoutingTable() *routing.Table {
 			b.AddPrefix(cfg.Prefix, route)
 		}
 
+		// resources are never pre-registered (see FetchResources), so
+		// resources/read routing resolves purely by prefix, same skip
+		// conditions FetchResources applies when fetching resources/list
+		if up.SupportsResources() && cfg.Prefix != "" && resourcePrefixAllowlist.MatchString(cfg.Prefix) {
+			b.AddResourcePrefix(cfg.Prefix, route)
+		}
+
 		for _, tool := range up.GetManagedTools() {
 			served := cfg.Prefix + tool.Name
 			b.AddTool(served, route)
