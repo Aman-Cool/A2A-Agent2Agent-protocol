@@ -287,13 +287,14 @@ func (a *app) loadAndWatchConfig(ctx context.Context) {
 	})
 }
 
-// shutdown budgets, spent sequentially. their sum must fit inside the pod's
-// terminationGracePeriodSeconds (30s by default) or the kubelet SIGKILLs the
+// shutdown budgets, spent sequentially. their sum (27s) must fit inside the
+// pod's terminationGracePeriodSeconds (30s by default) or the kubelet kills the
 // process mid-drain and none of this runs to completion.
 const (
-	serverDrainTimeout    = 10 * time.Second
+	serverDrainTimeout    = 8 * time.Second
+	brokerDrainTimeout    = 5 * time.Second
 	grpcDrainTimeout      = 10 * time.Second
-	telemetryFlushTimeout = 5 * time.Second
+	telemetryFlushTimeout = 4 * time.Second
 )
 
 func (a *app) run(ctx context.Context) {
@@ -357,8 +358,24 @@ func (a *app) run(ctx context.Context) {
 	if err := a.metricsServer.Shutdown(shutdownCtx); err != nil {
 		a.logger.Error("metrics server shutdown error", "error", err)
 	}
-	if err := a.mcpBroker.Shutdown(shutdownCtx); err != nil {
-		a.logger.Error("broker shutdown error", "error", err)
+	// mcpBroker.Shutdown discards its context: activeMCP.Stop blocks on the
+	// manager goroutine, and draining the pooled user sessions closes each one
+	// with a blocking upstream DELETE. A slow or unreachable upstream would
+	// otherwise stall the grpc stop and the telemetry flush behind it. Bound
+	// the wait rather than the work: the process is exiting, so an overrun is
+	// left to finish in the background instead of consuming someone else's
+	// budget.
+	brokerDone := make(chan struct{})
+	go func() {
+		defer close(brokerDone)
+		if err := a.mcpBroker.Shutdown(shutdownCtx); err != nil {
+			a.logger.Error("broker shutdown error", "error", err)
+		}
+	}()
+	select {
+	case <-brokerDone:
+	case <-time.After(brokerDrainTimeout):
+		a.logger.Warn("broker shutdown exceeded budget, continuing", "budget", brokerDrainTimeout)
 	}
 
 	// GracefulStop takes no context and blocks until every in-flight RPC returns.
