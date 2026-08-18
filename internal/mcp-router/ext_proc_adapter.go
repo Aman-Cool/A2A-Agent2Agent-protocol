@@ -167,8 +167,7 @@ func (s *ExtProcServer) Process(stream extProcV3.ExternalProcessor_ProcessServer
 		endOfStream         = false
 		mcpRequest          *routing.MCPRequest
 		ctx                 = stream.Context()
-		rewriter            *sseRewriter // nil until a tool call response arrives
-		isA2A               = false      // true for /a2a traffic when A2A passthrough is enabled
+		isA2A               = false              // true for /a2a traffic when A2A passthrough is enabled
 		rewriter            *elicitationRewriter // nil until a tool call response arrives
 		resourceRewriter    *resourceURIRewriter // nil until a tool call response with resources arrives
 	)
