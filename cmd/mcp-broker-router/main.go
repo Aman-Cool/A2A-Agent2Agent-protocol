@@ -287,6 +287,16 @@ func (a *app) loadAndWatchConfig(ctx context.Context) {
 	})
 }
 
+// shutdown budgets, spent sequentially. their sum (27s) must fit inside the
+// pod's terminationGracePeriodSeconds (30s by default) or the kubelet kills the
+// process mid-drain and none of this runs to completion.
+const (
+	serverDrainTimeout    = 8 * time.Second
+	brokerDrainTimeout    = 5 * time.Second
+	grpcDrainTimeout      = 10 * time.Second
+	telemetryFlushTimeout = 4 * time.Second
+)
+
 func (a *app) run(ctx context.Context) {
 	stop := make(chan os.Signal, 1)
 	// handle local interrupts and SIGTERM from kubernetes
@@ -339,14 +349,8 @@ func (a *app) run(ctx context.Context) {
 	<-stop
 
 	a.logger.Info("shutting down MCP Broker and MCP Router")
-	shutdownCtx, shutdownRelease := context.WithTimeout(context.Background(), 10*time.Second)
+	shutdownCtx, shutdownRelease := context.WithTimeout(context.Background(), serverDrainTimeout)
 	defer shutdownRelease()
-
-	if a.otelShutdown != nil {
-		if err := a.otelShutdown(shutdownCtx); err != nil {
-			a.logger.Error("OpenTelemetry shutdown error", "error", err)
-		}
-	}
 
 	if err := a.brokerServer.Shutdown(shutdownCtx); err != nil {
 		a.logger.Error("HTTP shutdown error", "error", err)
@@ -354,15 +358,49 @@ func (a *app) run(ctx context.Context) {
 	if err := a.metricsServer.Shutdown(shutdownCtx); err != nil {
 		a.logger.Error("metrics server shutdown error", "error", err)
 	}
-	if err := a.mcpBroker.Shutdown(shutdownCtx); err != nil {
-		a.logger.Error("broker shutdown error", "error", err)
+	// mcpBroker.Shutdown discards its context: activeMCP.Stop blocks on the
+	// manager goroutine, and draining the pooled user sessions closes each one
+	// with a blocking upstream DELETE. A slow or unreachable upstream would
+	// otherwise stall the grpc stop and the telemetry flush behind it. Bound
+	// the wait rather than the work: the process is exiting, so an overrun is
+	// left to finish in the background instead of consuming someone else's
+	// budget.
+	brokerDone := make(chan struct{})
+	go func() {
+		defer close(brokerDone)
+		if err := a.mcpBroker.Shutdown(shutdownCtx); err != nil {
+			a.logger.Error("broker shutdown error", "error", err)
+		}
+	}()
+	select {
+	case <-brokerDone:
+	case <-time.After(brokerDrainTimeout):
+		a.logger.Warn("broker shutdown exceeded budget, continuing", "budget", brokerDrainTimeout)
 	}
 
+	// GracefulStop takes no context and blocks until every in-flight RPC returns.
+	// ext_proc streams are long-lived RPCs, so on a busy pod that can outlast the
+	// grace period and end in SIGKILL. Stop() unblocks it once the budget is spent.
+	forceStop := time.AfterFunc(grpcDrainTimeout, func() {
+		a.logger.Warn("grpc graceful stop exceeded budget, forcing stop", "budget", grpcDrainTimeout)
+		a.grpcServer.Stop()
+	})
 	a.grpcServer.GracefulStop()
+	forceStop.Stop()
 
 	if a.redisClient != nil {
 		if err := a.redisClient.Close(); err != nil {
 			a.logger.Error("redis close error", "error", err)
+		}
+	}
+
+	// telemetry last, with its own budget: shutting the providers down before the
+	// drain discards the spans and metrics the drain itself emits.
+	if a.otelShutdown != nil {
+		otelCtx, otelRelease := context.WithTimeout(context.Background(), telemetryFlushTimeout)
+		defer otelRelease()
+		if err := a.otelShutdown(otelCtx); err != nil {
+			a.logger.Error("OpenTelemetry shutdown error", "error", err)
 		}
 	}
 }

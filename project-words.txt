@@ -361,6 +361,7 @@ sesssion
 sharedheaders
 SIEM
 SIEMs
+SIGKILL
 Sjlm
 sjson
 socket
