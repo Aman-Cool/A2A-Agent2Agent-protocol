@@ -47,7 +47,6 @@ type commonConfig struct {
 	configFile            string
 	enableURLElicitation  bool
 	enableA2A             bool
-	gatewayCACert         string
 }
 
 type routerConfig struct {
@@ -129,8 +128,6 @@ func parseFlags() *app {
 	flag.Int64Var(&bc.sessionDurationMins, "session-length", 60*24, "default session length with the gateway in minutes. Default 24h")
 	flag.BoolVar(&bc.enableURLElicitation, "enable-url-elicitation", false, "enable URL elicitation for per-user credential collection")
 	flag.BoolVar(&bc.enableA2A, "enable-a2a", false, "enable experimental A2A passthrough: lift A2A protocol metadata from /a2a traffic into headers for Telemetry and AuthPolicy")
-	flag.StringVar(&bc.gatewayCACert, "gateway-ca-cert", "",
-		"path to a PEM CA certificate for the gateway's TLS listener (private CA support for hairpin requests)")
 
 	gatewaySigningKeyDef := goenv.GetDefault("GATEWAY_SIGNING_KEY", "")
 	if gatewaySigningKeyDef == "" {
@@ -253,7 +250,7 @@ func (a *app) buildHairpinClient() {
 	pool, err := clients.BuildHairpinHTTPClientPool(
 		a.brokerCfg.privateHost,
 		a.brokerCfg.publicHost,
-		a.brokerCfg.gatewayCACert,
+		"",
 	)
 	if err != nil {
 		panic("failed to build hairpin HTTP client pool: " + err.Error())
@@ -288,6 +285,16 @@ func (a *app) loadAndWatchConfig(ctx context.Context) {
 		a.mcpConfig.Notify(ctx)
 	})
 }
+
+// shutdown budgets, spent sequentially. their sum (27s) must fit inside the
+// pod's terminationGracePeriodSeconds (30s by default) or the kubelet kills the
+// process mid-drain and none of this runs to completion.
+const (
+	serverDrainTimeout    = 8 * time.Second
+	brokerDrainTimeout    = 5 * time.Second
+	grpcDrainTimeout      = 10 * time.Second
+	telemetryFlushTimeout = 4 * time.Second
+)
 
 func (a *app) run(ctx context.Context) {
 	stop := make(chan os.Signal, 1)
@@ -341,14 +348,8 @@ func (a *app) run(ctx context.Context) {
 	<-stop
 
 	a.logger.Info("shutting down MCP Broker and MCP Router")
-	shutdownCtx, shutdownRelease := context.WithTimeout(context.Background(), 10*time.Second)
+	shutdownCtx, shutdownRelease := context.WithTimeout(context.Background(), serverDrainTimeout)
 	defer shutdownRelease()
-
-	if a.otelShutdown != nil {
-		if err := a.otelShutdown(shutdownCtx); err != nil {
-			a.logger.Error("OpenTelemetry shutdown error", "error", err)
-		}
-	}
 
 	if err := a.brokerServer.Shutdown(shutdownCtx); err != nil {
 		a.logger.Error("HTTP shutdown error", "error", err)
@@ -356,15 +357,49 @@ func (a *app) run(ctx context.Context) {
 	if err := a.metricsServer.Shutdown(shutdownCtx); err != nil {
 		a.logger.Error("metrics server shutdown error", "error", err)
 	}
-	if err := a.mcpBroker.Shutdown(shutdownCtx); err != nil {
-		a.logger.Error("broker shutdown error", "error", err)
+	// mcpBroker.Shutdown discards its context: activeMCP.Stop blocks on the
+	// manager goroutine, and draining the pooled user sessions closes each one
+	// with a blocking upstream DELETE. A slow or unreachable upstream would
+	// otherwise stall the grpc stop and the telemetry flush behind it. Bound
+	// the wait rather than the work: the process is exiting, so an overrun is
+	// left to finish in the background instead of consuming someone else's
+	// budget.
+	brokerDone := make(chan struct{})
+	go func() {
+		defer close(brokerDone)
+		if err := a.mcpBroker.Shutdown(shutdownCtx); err != nil {
+			a.logger.Error("broker shutdown error", "error", err)
+		}
+	}()
+	select {
+	case <-brokerDone:
+	case <-time.After(brokerDrainTimeout):
+		a.logger.Warn("broker shutdown exceeded budget, continuing", "budget", brokerDrainTimeout)
 	}
 
+	// GracefulStop takes no context and blocks until every in-flight RPC returns.
+	// ext_proc streams are long-lived RPCs, so on a busy pod that can outlast the
+	// grace period and end in SIGKILL. Stop() unblocks it once the budget is spent.
+	forceStop := time.AfterFunc(grpcDrainTimeout, func() {
+		a.logger.Warn("grpc graceful stop exceeded budget, forcing stop", "budget", grpcDrainTimeout)
+		a.grpcServer.Stop()
+	})
 	a.grpcServer.GracefulStop()
+	forceStop.Stop()
 
 	if a.redisClient != nil {
 		if err := a.redisClient.Close(); err != nil {
 			a.logger.Error("redis close error", "error", err)
+		}
+	}
+
+	// telemetry last, with its own budget: shutting the providers down before the
+	// drain discards the spans and metrics the drain itself emits.
+	if a.otelShutdown != nil {
+		otelCtx, otelRelease := context.WithTimeout(context.Background(), telemetryFlushTimeout)
+		defer otelRelease()
+		if err := a.otelShutdown(otelCtx); err != nil {
+			a.logger.Error("OpenTelemetry shutdown error", "error", err)
 		}
 	}
 }
@@ -387,8 +422,14 @@ func (a *app) loadConfig(path string) error {
 	} else {
 		a.logger.Debug("No virtualServers section found in configuration")
 	}
+	gatewayCACertPEM := viper.GetString("gatewayCACertPEM")
+	if a.hairpinPool != nil {
+		if err := a.hairpinPool.Rebuild(a.brokerCfg.privateHost, a.brokerCfg.publicHost, gatewayCACertPEM); err != nil {
+			return fmt.Errorf("rebuilding hairpin client: %w", err)
+		}
+	}
 	a.mcpConfig.SetServers(newServers, newVirtualServers)
-	a.mcpConfig.SetGatewayCACertPEM(viper.GetString("gatewayCACertPEM"))
+	a.mcpConfig.SetGatewayCACertPEM(gatewayCACertPEM)
 
 	a.logger.Debug("config successfully loaded", "# servers", len(newServers))
 

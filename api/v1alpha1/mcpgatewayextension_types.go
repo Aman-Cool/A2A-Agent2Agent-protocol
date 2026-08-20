@@ -132,8 +132,11 @@ type MCPGatewayExtensionSpec struct {
 	OAuthProtectedResource *OAuthProtectedResource `json:"oauthProtectedResource,omitempty"`
 
 	// caCertBundleRef references a Secret containing a PEM-encoded CA certificate
-	// bundle used as the base trust pool for all upstream MCP server connections.
-	// Per-server caCertSecretRef on MCPServerRegistration appends to this pool.
+	// bundle used as the base trust pool for:
+	// - broker connections to all upstream MCP servers (per-server caCertSecretRef appends)
+	// - 2025-11-25 protocol hairpin requests to the gateway HTTPS listener
+	// 2026-07-28 MCP calls do not hairpin and do not use this bundle for gateway TLS.
+	// Include both the gateway listener CA and upstream CAs when they differ.
 	// The Secret must have the label mcp.kuadrant.io/secret=true.
 	// +optional
 	CACertBundleRef *CACertBundleReference `json:"caCertBundleRef,omitempty"`
@@ -237,6 +240,7 @@ type MCPGatewayExtensionStatus struct {
 	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type" protobuf:"bytes,1,rep,name=conditions"`
 }
 
+// +kubebuilder:unservedversion
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:deprecatedversion:warning="mcp.kuadrant.io/v1alpha1 MCPGatewayExtension is deprecated; migrate to mcp.kuadrant.io/v1"
@@ -270,6 +274,7 @@ type MCPGatewayExtension struct {
 	Status MCPGatewayExtensionStatus `json:"status,omitzero"`
 }
 
+// +kubebuilder:unservedversion
 // +kubebuilder:object:root=true
 
 // MCPGatewayExtensionList contains a list of MCPGatewayExtension

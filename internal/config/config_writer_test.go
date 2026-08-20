@@ -222,3 +222,64 @@ func TestDeleteConfig(t *testing.T) {
 		})
 	}
 }
+
+func TestWriteGlobalGuardrails(t *testing.T) {
+	testCases := []struct {
+		name       string
+		guardrails *GuardrailsConfig
+	}{
+		{
+			name: "writes resolved guardrails config",
+			guardrails: &GuardrailsConfig{
+				URL:       "https://nemo-guardrails.internal:8080",
+				ConfigIDs: []string{"tool-safety-v1"},
+				Model:     "meta/llama-3.1-8b-instruct",
+				FailMode:  "deny",
+			},
+		},
+		{
+			name:       "nil clears guardrails config",
+			guardrails: nil,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			srw := newTestSecretReaderWriter(t)
+			ctx := context.Background()
+			namespaceName := types.NamespacedName{Namespace: "test-ns", Name: "mcp-gateway-config"}
+
+			// seed with a non-nil value so the "clears" case exercises an actual change.
+			if err := srw.WriteGlobalGuardrails(ctx, &GuardrailsConfig{URL: "https://seed.internal", Model: "seed-model"}, namespaceName); err != nil {
+				t.Fatalf("seed WriteGlobalGuardrails failed: %v", err)
+			}
+
+			if err := srw.WriteGlobalGuardrails(ctx, tc.guardrails, namespaceName); err != nil {
+				t.Fatalf("WriteGlobalGuardrails failed: %v", err)
+			}
+
+			secret := &corev1.Secret{}
+			if err := srw.Client.Get(ctx, namespaceName, secret); err != nil {
+				t.Fatalf("failed to get secret: %v", err)
+			}
+
+			configData := secret.StringData[configFileName]
+			if configData == "" {
+				configData = string(secret.Data[configFileName])
+			}
+			var cfg BrokerConfig
+			if err := yaml.Unmarshal([]byte(configData), &cfg); err != nil {
+				t.Fatalf("failed to unmarshal config: %v", err)
+			}
+
+			if (cfg.GlobalGuardrails == nil) != (tc.guardrails == nil) {
+				t.Fatalf("GlobalGuardrails = %+v, want %+v", cfg.GlobalGuardrails, tc.guardrails)
+			}
+			if tc.guardrails != nil {
+				if cfg.GlobalGuardrails.URL != tc.guardrails.URL || cfg.GlobalGuardrails.Model != tc.guardrails.Model {
+					t.Fatalf("GlobalGuardrails = %+v, want %+v", cfg.GlobalGuardrails, tc.guardrails)
+				}
+			}
+		})
+	}
+}

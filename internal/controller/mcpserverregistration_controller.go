@@ -44,6 +44,8 @@ const (
 	HTTPRouteIndex = "spec.targetRef.httproute"
 	// ProgrammedHTTPRouteIndex used to find programmed httproutes
 	ProgrammedHTTPRouteIndex = "status.hasProgrammedCondition"
+	// PrefixIndex used to find MCPServerRegistrations sharing a prefix, for conflict detection
+	PrefixIndex = "spec.prefix"
 
 	// conditionReasonReady is the reason used when the MCPServerRegistration is ready
 	conditionReasonReady = "Ready"
@@ -51,6 +53,12 @@ const (
 	conditionReasonNotReady = "NotReady"
 	// conditionReasonDisabled is the reason used when the MCPServerRegistration is disabled
 	conditionReasonDisabled = "Disabled"
+	// conditionReasonPrefixConflict is the reason used when another active MCPServerRegistration
+	// feeding the same MCPGatewayExtension already uses this prefix
+	conditionReasonPrefixConflict = "PrefixConflict"
+
+	// ManagedGuardrailsAnnotation is the annotation for the guardrails config IDs
+	ManagedGuardrailsAnnotation = "mcp.kuadrant.io/guardrails-config-ids"
 )
 
 // ServerInfo holds server information
@@ -181,7 +189,6 @@ func (r *MCPReconciler) Reconcile(ctx context.Context, req reconcile.Request) (r
 	logger.Info("valid gateways discovered ", "total", len(validGateways), "mcpregistrationname", mcpsr.Name)
 	// check for valid MCPGatewayExtension
 	validNamespaces := []string{}
-	hasGatewayCACertBundle := false
 	for _, vg := range validGateways {
 		mcpGatewayExtensions, err := r.MCPExtFinderValidator.FindValidMCPGatewayExtsForGateway(ctx, vg)
 		if err != nil {
@@ -213,9 +220,6 @@ func (r *MCPReconciler) Reconcile(ctx context.Context, req reconcile.Request) (r
 				continue
 			}
 			validNamespaces = append(validNamespaces, vext.Namespace)
-			if vext.Spec.CACertBundleRef != nil {
-				hasGatewayCACertBundle = true
-			}
 		}
 	}
 
@@ -229,7 +233,17 @@ func (r *MCPReconciler) Reconcile(ctx context.Context, req reconcile.Request) (r
 		return ctrl.Result{}, nil
 	}
 
-	mcpServerconfig, err := r.buildMCPServerConfig(ctx, targetRoute, mcpsr, hasGatewayCACertBundle)
+	if err := r.checkPrefixConflict(ctx, mcpsr, validNamespaces); err != nil {
+		if err := r.updateStatus(ctx, mcpsr, false, conditionReasonPrefixConflict, err.Error()); err != nil {
+			if apierrors.IsConflict(err) {
+				return ctrl.Result{RequeueAfter: defaultRequeueTime}, nil
+			}
+			return ctrl.Result{}, fmt.Errorf("reconcile failed: status update failed %w", err)
+		}
+		return ctrl.Result{}, nil
+	}
+
+	mcpServerconfig, err := r.buildMCPServerConfig(ctx, targetRoute, mcpsr)
 	if err != nil {
 		if err := r.updateStatus(ctx, mcpsr, false, conditionReasonNotReady, err.Error()); err != nil {
 			if apierrors.IsConflict(err) {
@@ -341,7 +355,116 @@ func (r *MCPReconciler) getTargetGatewaysFromParentRef(ctx context.Context, pare
 	return g, nil
 }
 
-func (r *MCPReconciler) buildMCPServerConfig(ctx context.Context, targetRoute *gatewayv1.HTTPRoute, mcpsr *mcpv1.MCPServerRegistration, hasGatewayCACertBundle bool) (*config.MCPServer, error) {
+// resolveValidNamespaces resolves the set of MCPGatewayExtension namespaces mcpsr's
+// config would be written into: its target HTTPRoute's accepted parent gateways,
+// filtered to extensions whose listener the route actually attaches to. Returns nil
+// on any resolution failure rather than an error - callers needing config-writing to
+// succeed already surface those failures separately in Reconcile; this is also used
+// for conflict detection on sibling registrations, where an unresolvable sibling
+// simply can't conflict with anything yet.
+func (r *MCPReconciler) resolveValidNamespaces(ctx context.Context, mcpsr *mcpv1.MCPServerRegistration) []string {
+	targetRoute, err := r.getTargetHTTPRoute(ctx, mcpsr)
+	if err != nil {
+		return nil
+	}
+	validGateways, err := r.findValidGatewaysForMCPServer(ctx, targetRoute)
+	if err != nil {
+		return nil
+	}
+	var validNamespaces []string
+	for _, vg := range validGateways {
+		mcpGatewayExtensions, err := r.MCPExtFinderValidator.FindValidMCPGatewayExtsForGateway(ctx, vg)
+		if err != nil {
+			continue
+		}
+		for _, vext := range mcpGatewayExtensions {
+			if !httpRouteAttachesToListener(targetRoute, vg, vext) {
+				continue
+			}
+			validNamespaces = append(validNamespaces, vext.Namespace)
+		}
+	}
+	return validNamespaces
+}
+
+// checkPrefixConflict checks whether mcpsr's prefix exactly duplicates another active
+// MCPServerRegistration's prefix within any MCPGatewayExtension namespace mcpsr's own
+// config would be written into (validNamespaces). Two registrations whose configs never
+// reach the same broker/router instance can't actually collide - a single Gateway can
+// host multiple independent extensions, each with its own broker and its own federated
+// server list - so this only compares against siblings sharing at least one such
+// namespace, not every registration cluster-wide. The oldest (by creation timestamp)
+// registration wins, matching checkNamespaceConflict/checkListenerConflict in
+// mcpgatewayextension_controller.go. Substring-prefix collisions are not handled here;
+// see the design doc's Longest-prefix match section for why.
+func (r *MCPReconciler) checkPrefixConflict(ctx context.Context, mcpsr *mcpv1.MCPServerRegistration, validNamespaces []string) error {
+	if mcpsr.Spec.Prefix == "" || len(validNamespaces) == 0 {
+		return nil
+	}
+
+	ownNamespaces := make(map[string]bool, len(validNamespaces))
+	for _, ns := range validNamespaces {
+		ownNamespaces[ns] = true
+	}
+
+	siblings := &mcpv1.MCPServerRegistrationList{}
+	if err := r.List(ctx, siblings, client.MatchingFields{PrefixIndex: mcpsr.Spec.Prefix}); err != nil {
+		return fmt.Errorf("failed to list registrations for prefix conflict check: %w", err)
+	}
+
+	for i := range siblings.Items {
+		sibling := &siblings.Items[i]
+		if sibling.GetUID() == mcpsr.GetUID() || sibling.DeletionTimestamp != nil {
+			continue
+		}
+
+		overlaps := false
+		for _, ns := range r.resolveValidNamespaces(ctx, sibling) {
+			if ownNamespaces[ns] {
+				overlaps = true
+				break
+			}
+		}
+		if !overlaps {
+			continue
+		}
+
+		oldest := findOldestMCPServerRegistration([]mcpv1.MCPServerRegistration{*mcpsr, *sibling})
+		if oldest.GetUID() != mcpsr.GetUID() {
+			return fmt.Errorf("conflict: prefix %q is already used by MCPServerRegistration %s/%s in the same MCPGatewayExtension",
+				mcpsr.Spec.Prefix, sibling.Namespace, sibling.Name)
+		}
+	}
+
+	return nil
+}
+
+func findOldestMCPServerRegistration(regs []mcpv1.MCPServerRegistration) *mcpv1.MCPServerRegistration {
+	oldest := &regs[0]
+	for i := 1; i < len(regs); i++ {
+		if isOlderMCPServerRegistration(&regs[i], oldest) {
+			oldest = &regs[i]
+		}
+	}
+	return oldest
+}
+
+// isOlderMCPServerRegistration reports whether a should be treated as older than b.
+// CreationTimestamp only has second granularity, so two registrations created within
+// the same second compare equal there; breaking the tie on UID keeps the result
+// symmetric - both registrations agree on the same winner regardless of which one is
+// reconciling and therefore at index 0 of the comparison slice. Without this, an
+// index-0-wins tie-break (as in findOldestExtension) lets both sides see themselves
+// as oldest, so both a conflicting pair reconciled within the same second could reach
+// Ready.
+func isOlderMCPServerRegistration(a, b *mcpv1.MCPServerRegistration) bool {
+	if !a.CreationTimestamp.Equal(&b.CreationTimestamp) {
+		return a.CreationTimestamp.Before(&b.CreationTimestamp)
+	}
+	return a.UID < b.UID
+}
+
+func (r *MCPReconciler) buildMCPServerConfig(ctx context.Context, targetRoute *gatewayv1.HTTPRoute, mcpsr *mcpv1.MCPServerRegistration) (*config.MCPServer, error) {
 	if mcpsr.DeletionTimestamp != nil {
 		// don't add deleting mcpserver
 		return nil, fmt.Errorf("cant generate config for deleting server %s/%s", mcpsr.Namespace, mcpsr.Name)
@@ -353,9 +476,12 @@ func (r *MCPReconciler) buildMCPServerConfig(ctx context.Context, targetRoute *g
 
 	// cspell:ignore mcpsr
 	serverName := mcpServerName(mcpsr)
-	// if a CA cert is configured (per-server or gateway-level), the upstream must be HTTPS
+	// a per-server CA cert is an explicit signal the upstream is HTTPS, so upgrade the
+	// scheme. the gateway CA bundle is shared trust material only and must not change the
+	// scheme: a plain-HTTP backend on a gateway that has a bundle stays HTTP. the upstream
+	// scheme otherwise comes from the service port (appProtocol/name https) in determineProtocol.
 	endpoint := serverInfo.Endpoint
-	if mcpsr.Spec.CACertSecretRef != nil || hasGatewayCACertBundle {
+	if mcpsr.Spec.CACertSecretRef != nil {
 		u, err := url.Parse(endpoint)
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse endpoint URL %q: %w", endpoint, err)
@@ -515,7 +641,7 @@ func (r *MCPReconciler) buildServiceEndpoint(route *HTTPRouteWrapper, service *c
 		hostAndPort = fmt.Sprintf("%s:%d", hostAndPort, *route.BackendPort())
 	}
 
-	protocol := r.determineProtocol(route, service, isExternal)
+	protocol := r.determineProtocol(route, service)
 	endpoint = fmt.Sprintf("%s://%s%s", protocol, hostAndPort, path)
 
 	if isExternal {
@@ -531,19 +657,21 @@ func (r *MCPReconciler) buildServiceEndpoint(route *HTTPRouteWrapper, service *c
 	return endpoint, routingHostname
 }
 
-// determineProtocol determines the protocol (http/https) for the service endpoint.
-// For external services it checks the appProtocol on the matching port.
-// For internal services it defaults to http; TLS upstreams are handled by the
-// caCertSecretRef or caCertBundleRef scheme upgrade in buildMCPServerConfig.
-func (r *MCPReconciler) determineProtocol(route *HTTPRouteWrapper, service *corev1.Service, isExternal bool) string {
-	if isExternal {
-		for _, port := range service.Spec.Ports {
-			if route.BackendPort() != nil && port.Port == *route.BackendPort() {
-				if port.AppProtocol != nil && strings.ToLower(*port.AppProtocol) == "https" {
-					return "https"
-				}
-				break
+// determineProtocol determines the protocol (http/https) for the service endpoint
+// from the matching service port. A port whose appProtocol or name is "https" is a
+// TLS upstream; this applies to both internal and external services. Trust material
+// (per-server caCertSecretRef or the gateway CA bundle) is layered on separately and
+// does not by itself change the scheme.
+func (r *MCPReconciler) determineProtocol(route *HTTPRouteWrapper, service *corev1.Service) string {
+	for _, port := range service.Spec.Ports {
+		if route.BackendPort() != nil && port.Port == *route.BackendPort() {
+			if port.AppProtocol != nil && strings.EqualFold(*port.AppProtocol, "https") {
+				return "https"
 			}
+			if strings.EqualFold(port.Name, "https") {
+				return "https"
+			}
+			break
 		}
 	}
 	return "http"
@@ -670,6 +798,10 @@ func (r *MCPReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manager) 
 		return fmt.Errorf("failed to setup required index for programmed httproutes %w", err)
 	}
 
+	if err := setupIndexMCPRegistrationToPrefix(ctx, mgr.GetFieldIndexer()); err != nil {
+		return fmt.Errorf("failed to setup required index from MCPServerRegistration to prefix %w", err)
+	}
+
 	controller := ctrl.NewControllerManagedBy(mgr).
 		For(&mcpv1.MCPServerRegistration{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Watches(
@@ -728,6 +860,19 @@ func setupIndexMCPRegistrationToHTTPRoute(ctx context.Context, indexer client.Fi
 			return []string{httpRouteIndexValue(namespace, targetRef.Name)}
 		}
 		return []string{}
+	}); err != nil {
+		return err
+	}
+	return nil
+}
+
+func setupIndexMCPRegistrationToPrefix(ctx context.Context, indexer client.FieldIndexer) error {
+	if err := indexer.IndexField(ctx, &mcpv1.MCPServerRegistration{}, PrefixIndex, func(rawObj client.Object) []string {
+		mcpsr := rawObj.(*mcpv1.MCPServerRegistration)
+		if mcpsr.Spec.Prefix == "" {
+			return []string{}
+		}
+		return []string{mcpsr.Spec.Prefix}
 	}); err != nil {
 		return err
 	}

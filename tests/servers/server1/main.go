@@ -198,13 +198,28 @@ func main() {
 	toolManager := &dynamicToolManager{server: server}
 	mcp.AddTool(server, &mcp.Tool{Name: "add_tool", Description: "dynamically add a new tool (triggers notifications/tools/list_changed)", Annotations: &mcp.ToolAnnotations{Title: "add"}}, toolManager.addTool)
 
-	server.AddPrompt(&mcp.Prompt{Name: "greet"}, promptHi)
+	server.AddPrompt(&mcp.Prompt{Name: "greet", Description: "greet a person by name"}, promptHi)
 
 	server.AddResource(&mcp.Resource{
 		Name:     "info",
 		MIMEType: "text/plain",
 		URI:      "embedded:info",
 	}, handleEmbeddedResource)
+
+	server.AddResource(&mcp.Resource{
+		Name:     "widget",
+		MIMEType: "text/html",
+		URI:      "ui://widget.html",
+	}, handleWidgetResource)
+
+	server.AddResource(&mcp.Resource{
+		Name:     "gadget",
+		MIMEType: "text/html",
+		URI:      "ui://gadget.html",
+	}, handleGadgetResource)
+
+	mcp.AddTool(server, &mcp.Tool{Name: "show_widget", Description: "return a tool result with a _meta.ui.resourceUri"}, showWidgetTool)
+	mcp.AddTool(server, &mcp.Tool{Name: "show_external_widget", Description: "return a tool result with a non-ui:// _meta.ui.resourceUri"}, showExternalWidgetTool)
 
 	if *httpAddr != "" {
 		server.AddReceivingMiddleware(rpcPrintMiddleware)
@@ -261,6 +276,57 @@ func rpcPrintMiddleware(
 		result, err := next(ctx, method, req)
 		return result, err
 	}
+}
+
+// showWidgetTool returns a tool result carrying _meta.ui.resourceUri.
+func showWidgetTool(
+	_ context.Context,
+	_ *mcp.CallToolRequest,
+	_ struct{},
+) (*mcp.CallToolResult, any, error) {
+	return &mcp.CallToolResult{
+		Meta: mcp.Meta{"ui": map[string]any{"resourceUri": "ui://widget.html"}},
+		Content: []mcp.Content{
+			&mcp.TextContent{Text: "widget shown"},
+		},
+	}, nil, nil
+}
+
+// showExternalWidgetTool returns a tool result with a non-ui:// _meta.ui.resourceUri,
+// for exercising the gateway's rule that only ui:// values get rewritten.
+func showExternalWidgetTool(
+	_ context.Context,
+	_ *mcp.CallToolRequest,
+	_ struct{},
+) (*mcp.CallToolResult, any, error) {
+	return &mcp.CallToolResult{
+		Meta: mcp.Meta{"ui": map[string]any{"resourceUri": "https://example.com/widget.html"}},
+		Content: []mcp.Content{
+			&mcp.TextContent{Text: "external widget shown"},
+		},
+	}, nil, nil
+}
+
+func handleWidgetResource(
+	_ context.Context,
+	_ *mcp.ReadResourceRequest,
+) (*mcp.ReadResourceResult, error) {
+	return &mcp.ReadResourceResult{
+		Contents: []*mcp.ResourceContents{
+			{URI: "ui://widget.html", MIMEType: "text/html", Text: "<div>widget</div>"},
+		},
+	}, nil
+}
+
+func handleGadgetResource(
+	_ context.Context,
+	_ *mcp.ReadResourceRequest,
+) (*mcp.ReadResourceResult, error) {
+	return &mcp.ReadResourceResult{
+		Contents: []*mcp.ResourceContents{
+			{URI: "ui://gadget.html", MIMEType: "text/html", Text: "<div>gadget</div>"},
+		},
+	}, nil
 }
 
 var embeddedResources = map[string]string{

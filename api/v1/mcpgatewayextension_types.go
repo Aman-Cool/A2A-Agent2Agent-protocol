@@ -63,6 +63,10 @@ const (
 	LogLevelWarn LogLevel = "warn"
 	// LogLevelError sets the broker-router --log-level flag to 8
 	LogLevelError LogLevel = "error"
+
+	// GuardrailsSecretNotFound is the reason seen when the guardrails secret referenced
+	// by the guardrails-ref annotation is not found
+	GuardrailsSecretNotFound = "GuardrailsSecretNotFound"
 )
 
 // MCPGatewayExtensionSpec defines the desired state of MCPGatewayExtension.
@@ -132,11 +136,20 @@ type MCPGatewayExtensionSpec struct {
 	OAuthProtectedResource *OAuthProtectedResource `json:"oauthProtectedResource,omitempty"`
 
 	// caCertBundleRef references a Secret containing a PEM-encoded CA certificate
-	// bundle used as the base trust pool for all upstream MCP server connections.
-	// Per-server caCertSecretRef on MCPServerRegistration appends to this pool.
+	// bundle used as the base trust pool for:
+	// - broker connections to all upstream MCP servers (per-server caCertSecretRef appends)
+	// - 2025-11-25 protocol hairpin requests to the gateway HTTPS listener
+	// 2026-07-28 MCP calls do not hairpin and do not use this bundle for gateway TLS.
+	// Include both the gateway listener CA and upstream CAs when they differ.
 	// The Secret must have the label mcp.kuadrant.io/secret=true.
 	// +optional
 	CACertBundleRef *CACertBundleReference `json:"caCertBundleRef,omitempty"`
+
+	// maxBodyBytes caps the size of any body the router buffers, in bytes.
+	// Applies to request/response prefix stripping and guardrails checks.
+	// +optional
+	// +default=1048576
+	MaxBodyBytes *int32 `json:"maxBodyBytes,omitempty"`
 }
 
 // OAuthProtectedResource configures the OAuth protected resource metadata

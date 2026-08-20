@@ -70,8 +70,11 @@ spec:
               caCertBundleRef:
                 description: |-
                   caCertBundleRef references a Secret containing a PEM-encoded CA certificate
-                  bundle used as the base trust pool for all upstream MCP server connections.
-                  Per-server caCertSecretRef on MCPServerRegistration appends to this pool.
+                  bundle used as the base trust pool for:
+                  - broker connections to all upstream MCP servers (per-server caCertSecretRef appends)
+                  - 2025-11-25 protocol hairpin requests to the gateway HTTPS listener
+                  2026-07-28 MCP calls do not hairpin and do not use this bundle for gateway TLS.
+                  Include both the gateway listener CA and upstream CAs when they differ.
                   The Secret must have the label mcp.kuadrant.io/secret=true.
                 properties:
                   key:
@@ -108,6 +111,13 @@ spec:
                 - warn
                 - error
                 type: string
+              maxBodyBytes:
+                default: 1048576
+                description: |-
+                  maxBodyBytes caps the size of any body the router buffers, in bytes.
+                  Applies to request/response prefix stripping and guardrails checks.
+                format: int32
+                type: integer
               oauthProtectedResource:
                 description: |-
                   oauthProtectedResource configures the OAuth protected resource metadata
@@ -400,8 +410,11 @@ spec:
               caCertBundleRef:
                 description: |-
                   caCertBundleRef references a Secret containing a PEM-encoded CA certificate
-                  bundle used as the base trust pool for all upstream MCP server connections.
-                  Per-server caCertSecretRef on MCPServerRegistration appends to this pool.
+                  bundle used as the base trust pool for:
+                  - broker connections to all upstream MCP servers (per-server caCertSecretRef appends)
+                  - 2025-11-25 protocol hairpin requests to the gateway HTTPS listener
+                  2026-07-28 MCP calls do not hairpin and do not use this bundle for gateway TLS.
+                  Include both the gateway listener CA and upstream CAs when they differ.
                   The Secret must have the label mcp.kuadrant.io/secret=true.
                 properties:
                   key:
@@ -669,7 +682,7 @@ spec:
         required:
         - spec
         type: object
-    served: true
+    served: false
     storage: false
     subresources:
       status: {}

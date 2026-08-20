@@ -38,9 +38,12 @@ const (
 
 // managedCommandFlags are the flags the controller owns and reconciles.
 // Any flag not in this list is user-managed and preserved as-is.
-// `--mcp-router-key` is kept in the list (without being generated) so that
-// existing deployments running an old controller image have the now-removed
-// flag stripped on the next reconcile rather than preserved as a "user flag".
+// `--mcp-router-key` and `--gateway-ca-cert` are kept in the list (without
+// being generated) so they are stripped on the next reconcile rather than
+// preserved as "user flags": `--mcp-router-key` from deployments running an
+// old controller image, `--gateway-ca-cert` from deployments that added it
+// manually per the pre-v1 docs. The broker binary no longer defines
+// `--gateway-ca-cert`, so leaving it would crash the pod at flag parse.
 var managedCommandFlags = []string{
 	"--mcp-broker-public-address",
 	"--mcp-gateway-private-host",
@@ -50,12 +53,17 @@ var managedCommandFlags = []string{
 	"--mcp-router-key",
 	"--enable-url-elicitation",
 	"--log-level",
+	"--gateway-ca-cert", // no longer generated; see comment above
 }
 
 // managedVolumeNames are the volume names the controller owns and reconciles.
 // Any volume not in this list is user-managed and preserved as-is.
+// `gateway-ca` was the volume/mount name the pre-v1 docs told users to add by
+// hand alongside `--gateway-ca-cert`. It is reclaimed here so the now-orphaned
+// volume and mount are stripped on the next reconcile.
 var managedVolumeNames = []string{
 	"config-volume",
+	"gateway-ca", // no longer generated; stripped from manual pre-v1 setups
 }
 
 // managedEnvVarNames are the env var names the controller owns and reconciles.
