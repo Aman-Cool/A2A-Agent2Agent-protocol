@@ -12,8 +12,8 @@ defer a genuinely slow or heavy suite to nightly. For a quick local happy-path r
 `make test-e2e-happy`.
 
 Tags currently in use: `[Happy]`, `[Full]`, `[multi-gateway]`, `[Auth]`, `[CACertBundle]`,
-`[Elicitation]`, `[Negative]`, `[URLElicitation]`, `[UserSpecificList]`, `[Security]`,
-`[Protocol2026]`, `[DualProtocol]`. Tags can combine, e.g. `[Happy,Protocol2026]`.
+`[Elicitation]`, `[Negative]`, `[URLElicitation]`, `[UserSpecificList]`,
+`[Security]`, `[Protocol2026]`, `[DualProtocol]`. Tags can combine, e.g. `[Happy,Protocol2026]`.
 
 ## E2E Test Reliability
 - Tests use broker `/status` endpoint for reliable server registration checks (not log parsing)
@@ -127,7 +127,7 @@ pattern.
 
 ### Make helper functions idempotent
 
-Helpers that patch deployments (add volumes, flags, listeners) must check whether the patch has
+Helpers that patch cluster state (CA bundles, flags, listeners) must check whether the patch has
 already been applied before re-applying. A crashed prior run may leave state behind. See
 `PatchBrokerCA` and `AddGatewayHTTPSListener` for the pattern.
 
