@@ -565,6 +565,11 @@ func (m *mockProcessServer) Send(actualResp *extProcV3.ProcessingResponse) error
 		require.NotNil(m.t, actualImmediateBody.ImmediateResponse, "expected response needs body")
 		require.NotNil(m.t, actualImmediateBody.ImmediateResponse.Body, "expected response needs body response")
 		require.NotNil(m.t, v.ImmediateResponse.Body, "expected response needs body")
+		// when the expected body is a real payload (not the "dummy" sentinel), assert
+		// it exactly — this lets a test distinguish, e.g., a -32700 from a -32600 body
+		if string(v.ImmediateResponse.Body) != "dummy" {
+			require.Equal(m.t, string(v.ImmediateResponse.Body), string(actualImmediateBody.ImmediateResponse.Body))
+		}
 		requireMatchingHeaderMutation(m.t, v.ImmediateResponse.Headers, actualImmediateBody.ImmediateResponse.Headers)
 		require.Equal(m.t, v.ImmediateResponse.GrpcStatus, actualImmediateBody.ImmediateResponse.GrpcStatus)
 		requireMatchingHTTPStatus(m.t, v.ImmediateResponse.Status, actualImmediateBody.ImmediateResponse.Status)

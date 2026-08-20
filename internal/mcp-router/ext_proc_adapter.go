@@ -6,11 +6,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"strconv"
 	"strings"
 	"sync/atomic"
 
 	"github.com/Kuadrant/mcp-gateway/internal/config"
+	"github.com/Kuadrant/mcp-gateway/internal/headers"
 	"github.com/Kuadrant/mcp-gateway/internal/idmap"
 	internaljwt "github.com/Kuadrant/mcp-gateway/internal/jwt"
 	"github.com/Kuadrant/mcp-gateway/internal/protocol"
@@ -36,6 +38,10 @@ type ExtProcServer struct {
 	ResponseHandler     routing.ResponseHandler
 	Router202607        routing.Router
 	ResponseHandler2026 routing.ResponseHandler
+	// EnableA2A turns on the experimental A2A passthrough: /a2a traffic gets its
+	// protocol metadata lifted into headers for Telemetry and AuthPolicy. Off by
+	// default; no A2A code path runs unless it is set.
+	EnableA2A bool
 }
 
 // OnConfigChange is used to register the router for config changes
@@ -161,6 +167,7 @@ func (s *ExtProcServer) Process(stream extProcV3.ExternalProcessor_ProcessServer
 		endOfStream         = false
 		mcpRequest          *routing.MCPRequest
 		ctx                 = stream.Context()
+		isA2A               = false              // true for /a2a traffic when A2A passthrough is enabled
 		rewriter            *elicitationRewriter // nil until a tool call response arrives
 		resourceRewriter    *resourceURIRewriter // nil until a tool call response with resources arrives
 	)
@@ -223,6 +230,45 @@ func (s *ExtProcServer) Process(stream extProcV3.ExternalProcessor_ProcessServer
 				),
 			)
 
+			// A2A passthrough: on /a2a traffic, strip any client-supplied x-a2a-*
+			// and set x-a2a-agent from the path, then let the request continue to
+			// the user's own route. Routing and :authority are not touched — the
+			// user's HTTPRoute carries the request to the agent. The method is only
+			// known at the body, so x-a2a-method is set there.
+			if s.EnableA2A && isA2APath(requestPath) {
+				isA2A = true
+				// a POST with no body has no request-body phase, so x-a2a-method would
+				// never be set — fail closed rather than forward it to the agent
+				// unlabeled. GET (discovery) legitimately has no body and passes through.
+				if method == http.MethodPost && endOfStream {
+					s.Logger.DebugContext(ctx, "[ext_proc] Process: A2A POST with no body, failing closed", "request id", requestID, "path", requestPath)
+					resp := responseBuilder.WithImmediateJSONRPCResponse(200, nil, a2aErrorBody(nil, a2aErrParse, "invalid json-rpc request"), "application/json").Build()
+					for _, response := range resp {
+						if err := stream.Send(response); err != nil {
+							s.Logger.ErrorContext(ctx, "error sending response", "error", err)
+							recordError(span, err, 500)
+							return err //nolint:spancheck // ended via defer closure
+						}
+					}
+					return nil
+				}
+				a2aHeaders := NewHeaders()
+				if agent := a2aAgentFromPath(requestPath); agent != "" {
+					a2aHeaders.WithCustomHeader(headers.A2AAgentHeader, agent)
+					span.SetAttributes(attribute.String("a2a.agent", agent))
+				}
+				s.Logger.DebugContext(ctx, "[ext_proc] Process: A2A request headers", "request id", requestID, "path", requestPath, "method", method)
+				resp := responseBuilder.WithRequestHeadersResponse(a2aHeaders.Build(), a2aInternalHeaders...).Build()
+				for _, response := range resp {
+					if err := stream.Send(response); err != nil {
+						s.Logger.ErrorContext(ctx, "error sending response", "error", err)
+						recordError(span, err, 500)
+						return err
+					}
+				}
+				continue
+			}
+
 			responses, _ := s.HandleRequestHeaders(ctx, r.RequestHeaders)
 			s.Logger.DebugContext(ctx, "[ext_proc ] Process: ProcessingRequest_RequestHeaders", "request id:", requestID, "path", requestPath, "method", method)
 			for _, response := range responses {
@@ -230,7 +276,7 @@ func (s *ExtProcServer) Process(stream extProcV3.ExternalProcessor_ProcessServer
 				if err := stream.Send(response); err != nil {
 					s.Logger.ErrorContext(ctx, "error sending response", "error", err)
 					recordError(span, err, 500)
-					return err //nolint:spancheck // ended via defer closure
+					return err
 				}
 			}
 			continue
@@ -275,6 +321,45 @@ func (s *ExtProcServer) Process(stream extProcV3.ExternalProcessor_ProcessServer
 					}
 				}
 				return err
+			}
+
+			// A2A passthrough: parse the JSON-RPC envelope only and set x-a2a-method
+			// (normalized to a bounded set). An unparseable body fails closed with a
+			// JSON-RPC -32700 rather than reaching the agent without the metadata this
+			// phase records. The body is never mutated.
+			if isA2A {
+				method, _, parseErr := parseA2AMethod(body)
+				// fail closed on anything that isn't a usable JSON-RPC request: an
+				// unparseable body (-32700), or valid JSON with no method to label
+				// (-32600). The immediate response terminates the request, so nothing
+				// reaches the agent without the metadata this phase records.
+				if parseErr != nil || method == "" {
+					code := a2aErrParse
+					if parseErr == nil {
+						code = a2aErrInvalidRequest
+					}
+					s.Logger.DebugContext(ctx, "[ext_proc] Process: A2A body not a valid json-rpc request, failing closed", "request id", requestID, "error", parseErr)
+					resp := responseBuilder.WithImmediateJSONRPCResponse(200, nil, a2aErrorBody(nil, code, "invalid json-rpc request"), "application/json").Build()
+					for _, res := range resp {
+						if err := stream.Send(res); err != nil {
+							s.Logger.ErrorContext(ctx, "error sending response", "error", err)
+							return err
+						}
+					}
+					return nil
+				}
+				norm := normalizeA2AMethod(method)
+				span.SetAttributes(attribute.String("a2a.method", norm))
+				s.Logger.DebugContext(ctx, "[ext_proc] Process: A2A request body", "request id", requestID, "method", norm)
+				a2aHeaders := NewHeaders().WithCustomHeader(headers.A2AMethodHeader, norm)
+				resp := responseBuilder.WithRequestBodyHeadersResponse(a2aHeaders.Build()).Build()
+				for _, res := range resp {
+					if err := stream.Send(res); err != nil {
+						s.Logger.ErrorContext(ctx, "error sending response", "error", err)
+						return err
+					}
+				}
+				continue
 			}
 
 			// non-JSON requests (e.g. form submissions to /tokens) pass through
@@ -398,6 +483,20 @@ func (s *ExtProcServer) Process(stream extProcV3.ExternalProcessor_ProcessServer
 				return err
 			}
 			s.Logger.DebugContext(ctx, "[ext_proc ] Process: ProcessingRequest_ResponseHeaders", "request id:", requestID)
+
+			// A2A passthrough: the response is not observed in this phase — pass it
+			// through unchanged. No ModeOverride is set, so no response body follows.
+			if isA2A {
+				resp := responseBuilder.WithDoNothingResponseHeaderResponse().Build()
+				for _, response := range resp {
+					if err := stream.Send(response); err != nil {
+						s.Logger.ErrorContext(ctx, "error sending response", "error", err)
+						recordError(span, err, 500)
+						return err
+					}
+				}
+				return nil
+			}
 
 			statusCode := getSingleValueHeader(r.ResponseHeaders.Headers, ":status")
 			span.SetAttributes(

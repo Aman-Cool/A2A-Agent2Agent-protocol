@@ -9,6 +9,7 @@
     - [Helm Install](./how-to-install-and-configure.md)
 - [Configure MCP Gateway Listener and Router](./configure-mcp-gateway-listener-and-router.md)
 - [Multi-Protocol Support](./multi-protocol-support.md)
+- [A2A Passthrough (Experimental)](./a2a-passthrough.md)
 - Configuring MCP Servers
     - [MCP Server Configuration](./register-mcp-servers.md)
     - [Virtual MCP Servers](./virtual-mcp-servers.md)

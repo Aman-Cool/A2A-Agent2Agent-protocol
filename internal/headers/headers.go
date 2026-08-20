@@ -12,3 +12,12 @@ const (
 	// Stripped from any client-supplied value by the router.
 	VerifiedSubHeader = "x-mcp-verified-sub"
 )
+
+// A2A protocol-metadata headers, set by the ext-proc router from the request
+// path and body when A2A passthrough is enabled, so Istio Telemetry and
+// AuthPolicy can key on the agent and method. Router-derived and stripped from
+// any client-supplied value, so a client cannot forge what policy keys on.
+const (
+	A2AAgentHeader  = "x-a2a-agent"  // agent identity, from the /a2a/{agent} path segment
+	A2AMethodHeader = "x-a2a-method" // A2A JSON-RPC method (normalized to a bounded set)
+)
