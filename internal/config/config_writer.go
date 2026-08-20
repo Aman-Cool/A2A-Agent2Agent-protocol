@@ -270,6 +270,43 @@ func (srw *SecretReaderWriter) WriteCACertBundle(ctx context.Context, caCertPEM 
 	})
 }
 
+// WriteGlobalGuardrails updates the globalGuardrails field of the config secret
+// with the resolved guardrails config. If guardrails is disabled or its Secret is removed,
+// pass nil to clear the globalGuardrails field.
+func (srw *SecretReaderWriter) WriteGlobalGuardrails(ctx context.Context, guardrailsConfig *GuardrailsConfig, namespaceName types.NamespacedName) error {
+	return retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+		existingConfig, backingSecret, err := srw.readOrCreateConfigSecret(ctx, namespaceName)
+		if err != nil {
+			return fmt.Errorf("write global guardrails failed to read config secret: %w", err)
+		}
+
+		if globalGuardrailsEqual(existingConfig.GlobalGuardrails, guardrailsConfig) {
+			return nil
+		}
+
+		existingConfig.GlobalGuardrails = guardrailsConfig
+		updated, err := yaml.Marshal(existingConfig)
+		if err != nil {
+			return fmt.Errorf("write global guardrails failed to marshal config: %w", err)
+		}
+
+		backingSecret.StringData[configFileName] = string(updated)
+		return srw.Client.Update(ctx, backingSecret)
+	})
+}
+
+// globalGuardrailsEqual reports whether two possibly-nil GuardrailsConfig
+// values are equivalent, to avoid a no-op Secret update.
+func globalGuardrailsEqual(a, b *GuardrailsConfig) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	if a.URL != b.URL || a.Model != b.Model || a.FailMode != b.FailMode {
+		return false
+	}
+	return slices.Equal(a.ConfigIDs, b.ConfigIDs)
+}
+
 // DeleteConfig deletes the entire config secret. If the secret doesn't exist,
 // this is a no-op and returns nil.
 func (srw *SecretReaderWriter) DeleteConfig(ctx context.Context, namespaceName types.NamespacedName) error {

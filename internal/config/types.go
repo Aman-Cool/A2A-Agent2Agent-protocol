@@ -116,6 +116,16 @@ type MCPServer struct {
 	Category            []string                   `json:"category,omitempty"            yaml:"category,omitempty"`
 	Hint                string                     `json:"hint,omitempty"                yaml:"hint,omitempty"`
 	Tags                []string                   `json:"tags,omitempty"                yaml:"tags,omitempty"`
+	GuardrailsConfigIDs []string                   `json:"guardrailsConfigIDs,omitempty" yaml:"guardrailsConfigIDs,omitempty"`
+}
+
+// GuardrailsConfig holds the resolved guardrails server config parsed from
+// the guardrails Secret referenced by the MCPGatewayExtension.
+type GuardrailsConfig struct {
+	URL       string   `json:"url"                 yaml:"url"`
+	ConfigIDs []string `json:"configIDs,omitempty" yaml:"configIDs,omitempty"`
+	Model     string   `json:"model"               yaml:"model"`
+	FailMode  string   `json:"failMode,omitempty"  yaml:"failMode,omitempty"` // "deny" | "allow"
 }
 
 // TokenURLElicitationConfig configures per-user token collection via URL elicitation.
@@ -147,6 +157,7 @@ func (mcpServer *MCPServer) ConfigChanged(existingConfig MCPServer) bool {
 		normalizeState(existingConfig.State) != normalizeState(mcpServer.State) ||
 		existingConfig.UserSpecificList != mcpServer.UserSpecificList ||
 		existingConfig.Hint != mcpServer.Hint ||
+		guardrailsConfigChanged(existingConfig.GuardrailsConfigIDs, mcpServer.GuardrailsConfigIDs) ||
 		tokenURLElicitationChanged(mcpServer.TokenURLElicitation, existingConfig.TokenURLElicitation) {
 		return true
 	}
@@ -187,6 +198,13 @@ func tokenURLElicitationChanged(a, b *TokenURLElicitationConfig) bool {
 	return a.URL != b.URL
 }
 
+// guardrailsConfigChanged reports whether a server's per-server guardrails
+// config IDs changed. The router evaluates rails in the order the annotation
+// lists them.
+func guardrailsConfigChanged(a, b []string) bool {
+	return !slices.Equal(a, b)
+}
+
 // Path returns the path part of the mcp url
 func (mcpServer *MCPServer) Path() (string, error) {
 	parsedURL, err := url.Parse(mcpServer.URL)
@@ -210,9 +228,13 @@ type Observer interface {
 
 // BrokerConfig holds broker configuration
 type BrokerConfig struct {
-	Servers          []MCPServer           `json:"servers"                          yaml:"servers"`
-	VirtualServers   []VirtualServerConfig `json:"virtualServers,omitempty"         yaml:"virtualServers,omitempty"`
-	GatewayCACertPEM string                `json:"gatewayCACertPEM,omitempty"       yaml:"gatewayCACertPEM,omitempty"`
+	Servers          []MCPServer           `json:"servers"                     yaml:"servers"`
+	VirtualServers   []VirtualServerConfig `json:"virtualServers,omitempty"    yaml:"virtualServers,omitempty"`
+	GatewayCACertPEM string                `json:"gatewayCACertPEM,omitempty"  yaml:"gatewayCACertPEM,omitempty"`
+	// GlobalGuardrails is the resolved guardrails config for this gateway,
+	// parsed from the Secret referenced by the guardrails-ref annotation. Nil
+	// when guardrails isn't configured.
+	GlobalGuardrails *GuardrailsConfig `json:"globalGuardrails,omitempty" yaml:"globalGuardrails,omitempty"`
 }
 
 // AuthConfig holds auth configuration

@@ -56,6 +56,9 @@ const (
 	// conditionReasonPrefixConflict is the reason used when another active MCPServerRegistration
 	// feeding the same MCPGatewayExtension already uses this prefix
 	conditionReasonPrefixConflict = "PrefixConflict"
+
+	// ManagedGuardrailsAnnotation is the annotation for the guardrails config IDs
+	ManagedGuardrailsAnnotation = "mcp.kuadrant.io/guardrails-config-ids"
 )
 
 // ServerInfo holds server information

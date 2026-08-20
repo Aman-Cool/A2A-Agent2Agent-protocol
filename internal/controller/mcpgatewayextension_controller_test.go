@@ -26,6 +26,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	mcpv1 "github.com/Kuadrant/mcp-gateway/api/v1"
+	"github.com/Kuadrant/mcp-gateway/internal/config"
 )
 
 const (
@@ -205,6 +206,10 @@ func (m *mockConfigWriterDeleter) WriteEmptyConfig(ctx context.Context, namespac
 }
 
 func (m *mockConfigWriterDeleter) WriteCACertBundle(ctx context.Context, caCertPEM string, namespaceName types.NamespacedName) error {
+	return nil
+}
+
+func (m *mockConfigWriterDeleter) WriteGlobalGuardrails(ctx context.Context, guardrailsConfig *config.GuardrailsConfig, namespaceName types.NamespacedName) error {
 	return nil
 }
 
