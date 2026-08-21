@@ -213,7 +213,7 @@ var (
 	ToolDiscoveryGatewayURL       = goenv.GetDefault("TOOL_DISCOVERY_GATEWAY_URL", gatewayURLDefault(ToolDiscoveryPublicHost, "http://mcp.tool-discovery.127-0-0-1.sslip.io:8001/mcp"))
 	Protocol2026GatewayURL        = goenv.GetDefault("PROTOCOL_2026_GATEWAY_URL", gatewayURLDefault(Protocol2026PublicHost, "http://mcp.protocol-2026.127-0-0-1.sslip.io:8011/mcp"))
 	ResourcesFederationGatewayURL = goenv.GetDefault("RESOURCES_FEDERATION_GATEWAY_URL", gatewayURLDefault(ResourcesFederationPublicHost, "http://mcp.resources-federation.127-0-0-1.sslip.io:8012/mcp"))
-	A2APassthroughGatewayURL      = goenv.GetDefault("A2A_PASSTHROUGH_GATEWAY_URL", gatewayURLDefault(A2APassthroughPublicHost, "http://mcp.a2a-passthrough.127-0-0-1.sslip.io:8001/mcp"))
+	A2APassthroughGatewayURL      = goenv.GetDefault("A2A_PASSTHROUGH_GATEWAY_URL", gatewayURLDefault(A2APassthroughPublicHost, "http://mcp.a2a-passthrough.127-0-0-1.sslip.io:8013/mcp"))
 )
 
 // gatewayURLDefault returns the Kind-specific localhost URL when using the default domain,

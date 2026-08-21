@@ -51,11 +51,11 @@ var _ = Describe("A2A Passthrough", Ordered, Label("A2A"), func() {
 		a2aExt   *MCPGatewayExtensionSetup
 		a2aRoute *gatewayapiv1.HTTPRoute
 		// base URL for A2A requests on the a2a-passthrough listener. On Kind the
-		// listener is reached on the shared :8001 nodeport; on real clusters via the
-		// derived host.
+		// listener has its own port (gateway 8083 -> host 8013), like the other
+		// isolated suites; on real clusters via the derived host.
 		a2aBaseURL = func() string {
 			if e2eDomain == defaultE2EDomain {
-				return "http://" + a2aPassthroughServerHost("a2a") + ":8001"
+				return "http://" + a2aPassthroughServerHost("a2a") + ":8013"
 			}
 			return e2eScheme + "://" + a2aPassthroughServerHost("a2a")
 		}()

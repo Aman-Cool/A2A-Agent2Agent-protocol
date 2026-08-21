@@ -96,7 +96,7 @@ spec:
           from: All
     - name: a2a-passthrough
       hostname: '*.a2a-passthrough.127-0-0-1.sslip.io'
-      port: 8080
+      port: 8083
       protocol: HTTP
       allowedRoutes:
         namespaces:
