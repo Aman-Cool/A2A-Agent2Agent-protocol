@@ -12,8 +12,10 @@ When a platform engineer rolls out a gateway upgrade during working hours, they 
 
 **Cover:**
 
-- What a rollout looks like from the client's side: in-flight calls complete, new sessions against the draining pod get a retryable error, the replacement pod is already serving
+- What a rollout looks like from the client's side: calls that fit inside the drain deadline complete, new sessions against the draining pod get a retryable error, the replacement pod is already serving
+- The deadline boundary explicitly: a call that outlasts `drainDeadline` may lose its response when the bounded teardown begins. That is the contract, not a defect, and long-running tools should be sized against it
 - Why `maxSurge` matters, and why node drain, eviction and crash are different from `kubectl rollout restart`
+- That endpoint propagation is not something the gateway can bound; if a cluster is slow to converge, raising the propagation delay is the lever
 - What is explicitly not promised: side-effecting tool calls whose response was lost, and streams already in progress
 
 ### When I want to understand why pods take longer to terminate
@@ -48,6 +50,10 @@ When an MCP client developer sees failures coincide with a gateway rollout, they
 
 ## Security Architecture (`docs/design/security-architecture.md`)
 
+### When I want to confirm a draining pod cannot be exploited
+
+When a security reviewer assesses the drain feature, they want assurance that a terminating pod cannot be induced into a weaker enforcement posture so that graceful shutdown does not become an attack window.
+
 **Cover:**
 
 - Draining changes when traffic stops arriving, never what happens to traffic that arrives; `failure_mode_allow` stays `false`
@@ -55,6 +61,10 @@ When an MCP client developer sees failures coincide with a gateway rollout, they
 - No credential persistence is introduced, which is what kept durable cross-replica cleanup out of scope in #1363
 
 ## Release Notes (`docs/release-notes/`)
+
+### When I want to know what changes for me on upgrade
+
+When a platform engineer reads the release notes before upgrading, they want to know which observable behaviours change so that they can decide whether anything in their tooling or alerting needs adjusting first.
 
 **Cover:**
 

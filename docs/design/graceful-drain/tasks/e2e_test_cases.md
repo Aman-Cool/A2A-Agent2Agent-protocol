@@ -6,11 +6,11 @@ Format follows `tests/e2e/test_cases.md`. `Drain` is the feature tag; only the c
 
 ### [Happy,Drain] Test tool calls survive a rollout restart under load
 
-- When a client issues sustained concurrent tools/call requests against the gateway and the mcp-gateway deployment is restarted with `kubectl rollout restart`, every request should either complete successfully or fail with a retryable JSON-RPC error. No request should fail with a transport-level reset or an ext_proc 5xx. The test runs Serial because it restarts shared infrastructure.
+- When a client issues sustained concurrent tools/call requests whose individual durations are shorter than the drain deadline, and the mcp-gateway deployment is restarted with `kubectl rollout restart`, every request should either complete successfully or fail with a retryable JSON-RPC error. No request should fail with a transport-level reset or an ext_proc 5xx. The assertion is deliberately scoped to calls that fit inside the deadline; calls that outlast it are covered separately below, and the design does not promise them a clean outcome. The test runs Serial because it restarts shared infrastructure.
 
-### [Drain] Test readiness fails while draining but liveness stays healthy
+### [Drain] Test readiness reports draining while liveness stays healthy
 
-- When a broker-router pod receives SIGTERM, its /readyz endpoint should begin returning 503 while /healthz continues to return 200. This distinguishes a pod that is intentionally going away from one the kubelet should restart, and confirms the drain state is observable from outside the process.
+- When a broker-router pod receives SIGTERM, its /readyz endpoint should begin returning 503 while /healthz continues to return 200. This asserts that drain state is *reported*, not that readiness is the mechanism withdrawing traffic — endpoint removal is driven by pod deletion, and the readiness probe's 10s period with a 3-failure threshold is far too slow to serve that purpose. The value here is observability, and correctness on paths where a pod drains without being deleted.
 
 ### [Drain] Test no new backend sessions are created while draining
 
@@ -24,9 +24,13 @@ Format follows `tests/e2e/test_cases.md`. `Drain` is the feature tag; only the c
 
 - When a slow tool call is in flight and the serving pod receives SIGTERM, the call should complete and return its result rather than being cut at the socket, provided it finishes within the drain deadline. Uses a test server tool with a controllable delay shorter than the deadline.
 
-### [Drain] Test drain deadline is enforced
+### [Drain] Test drain deadline is enforced and overdue calls fail bounded
 
-- When a tool call outlasts the drain deadline, the pod should stop waiting, proceed to the bounded teardown, and exit within terminationGracePeriodSeconds rather than being killed by the kubelet. Uses a delay longer than the deadline and asserts the pod's exit is clean and the forced-termination metric is incremented.
+- When a tool call outlasts the drain deadline, the pod should stop waiting, proceed to the bounded teardown, and exit within terminationGracePeriodSeconds rather than being killed by the kubelet. The overdue call is permitted to fail, and this is the bound the Happy case above deliberately excludes: assert the failure is bounded in time and the forced-termination metric is incremented, rather than asserting the call succeeds. Uses a delay longer than the deadline.
+
+### [Drain] Test HTTP requests drain alongside ext_proc streams
+
+- When a slow HTTP request to the broker is in flight and the pod receives SIGTERM, the request should be given the drain deadline to complete rather than being cut when the teardown begins. Confirms brokerServer.Shutdown is started at the beginning of the drain rather than only in the later teardown, which is what makes the design's "HTTP and ext_proc work" guarantee true for both.
 
 ### [Drain] Test the pod exits within its grace period
 

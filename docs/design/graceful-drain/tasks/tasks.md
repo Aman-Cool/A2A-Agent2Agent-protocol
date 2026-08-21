@@ -20,19 +20,26 @@ What does not exist and must be added: any notion of lifecycle state, any accoun
 
 ---
 
-### Task 1: Lifecycle state (CONNLINK-TBD)
+### Task 1: Lifecycle state and shared budgets (CONNLINK-TBD)
+
+The budgets cannot live in `cmd/mcp-broker-router`: that is `package main` and Go cannot import it, so the controller in Task 6 would have to duplicate the values — reintroducing exactly the drift the design exists to prevent. They go in an importable package from the start, alongside the lifecycle state that Tasks 2, 3 and 4 all depend on.
 
 **Files:**
 
-- `cmd/mcp-broker-router/lifecycle.go` (new)
-- `cmd/mcp-broker-router/lifecycle_test.go` (new)
+- `internal/drain/state.go` (new)
+- `internal/drain/state_test.go` (new)
+- `internal/drain/budget.go` (new)
+- `internal/drain/budget_test.go` (new)
 - `cmd/mcp-broker-router/main.go`
 
 **Acceptance criteria:**
 
-- [ ] A `State` type with `serving`, `draining`, `terminating`, stored as an atomic value on `app`.
+- [ ] A `State` type with `serving`, `draining`, `terminating`, held as an atomic value and exported for the router and health handlers to read.
 - [ ] Transitions are one-way and idempotent; a second SIGTERM does not reset state or restart the drain.
 - [ ] Reads are allocation-free and safe from request-path goroutines.
+- [ ] `internal/drain/budget.go` is the single home for `drainPropagationDelay`, `drainDeadline`, and the four teardown budgets merged in #1390, plus a `TotalGracePeriod()` derived from them.
+- [ ] `cmd/mcp-broker-router` consumes the constants from `internal/drain`; none are redeclared there.
+- [ ] A test asserts `TotalGracePeriod()` exceeds the sum of every individual budget.
 - [ ] Unit tests cover each transition and concurrent read/write under `-race`.
 
 **Verification:**
@@ -69,11 +76,14 @@ go test ./cmd/... -race -count=1
 
 ### Task 3: In-flight work accounting (CONNLINK-TBD)
 
+Depends on Task 1 for the state type and the tracker's home.
+
 **Files:**
 
+- `internal/drain/tracker.go` (new)
+- `internal/drain/tracker_test.go` (new)
 - `internal/mcp-router/ext_proc_adapter.go`
 - `internal/mcp-router/ext_proc_adapter_test.go`
-- `cmd/mcp-broker-router/lifecycle.go`
 
 **Acceptance criteria:**
 
@@ -100,13 +110,16 @@ go test ./internal/routing/... -bench=. -benchmem -run='^$'
 - `internal/routing/router_202511.go`
 - `internal/routing/router_test.go`
 
+Depends on Task 1 for the state type. The linearization point matters here: see the design's *Linearization point for session refusal*.
+
 **Acceptance criteria:**
 
-- [ ] `initializeMCPServerSession` refuses to create a new backend session while draining and returns a retryable error.
+- [ ] The lifecycle check sits **inside** `initGroup.Do`, after the cache lookup and before `InitForClient`, so the atomic state read is the linearization point.
+- [ ] An initialization that observes `serving` runs to completion and is counted as in-flight work; one that observes `draining` is refused before any upstream session exists.
+- [ ] Callers that joined an already-running `Do` share its result rather than being refused, since that session was admitted while the pod was serving.
 - [ ] Requests using an existing backend session mapping continue to route normally.
-- [ ] No backend session is created and then abandoned; the refusal happens before initialization, not after.
 - [ ] The drain response is derived from process state only, never from a client-supplied header.
-- [ ] Unit tests cover refusal, existing-session passthrough, and the singleflight interaction.
+- [ ] Unit tests cover refusal, existing-session passthrough, singleflight joiners, and a race test flipping state concurrently with initialization under `-race`.
 
 **Verification:**
 
@@ -123,13 +136,17 @@ go test ./internal/routing/... -race -count=1
 
 - `cmd/mcp-broker-router/main.go`
 
+Depends on Tasks 1, 3 and 4: the drain needs the state, something to wait on, and session gating.
+
 **Acceptance criteria:**
 
-- [ ] SIGTERM moves the process to `draining` before any server shutdown begins.
-- [ ] The drain waits for in-flight work up to `drainDeadline`, then moves to `terminating`.
-- [ ] The existing bounded teardown from #1390 runs unchanged after the drain.
-- [ ] Budgets are named constants in one place, and their sum is asserted against the grace period in a test.
-- [ ] Reaching the deadline is logged at warn with the counts still outstanding.
+- [ ] SIGTERM moves the process to `draining` before any shutdown begins.
+- [ ] `brokerServer.Shutdown` is started at the beginning of the drain so HTTP requests drain concurrently with ext_proc streams under `drainDeadline`, rather than only in the later teardown.
+- [ ] The drain waits for both to finish, or for `drainDeadline`, then moves to `terminating`.
+- [ ] The bounded teardown from #1390 runs unchanged afterwards, including its `serverDrainTimeout` call as the backstop for anything still open.
+- [ ] Budgets are consumed from `internal/drain`; none are redeclared here.
+- [ ] Reaching the deadline is logged at warn with the outstanding HTTP and ext_proc counts.
+- [ ] A test covers a delayed HTTP request completing inside the deadline, and one exceeding it.
 
 **Verification:**
 
@@ -151,8 +168,9 @@ go test ./cmd/... -race -count=1
 
 **Acceptance criteria:**
 
-- [ ] The generated Deployment sets a `preStop` hook sleeping `drainPropagationDelay`.
-- [ ] `terminationGracePeriodSeconds` is computed from the shared budget constants plus a safety margin, not hardcoded independently.
+- [ ] The generated Deployment sets a `preStop` hook sleeping `drainPropagationDelay`, imported from `internal/drain`.
+- [ ] `terminationGracePeriodSeconds` is `drain.TotalGracePeriod()`, never a literal.
+- [ ] `drainPropagationDelay` is validated against a real cluster: measure the interval between pod deletion and the endpoint disappearing from the gateway's Envoy config, and record the observed value in the design. Raise the default if 5s does not cover it.
 - [ ] The static manifest and the Helm chart match the controller output.
 - [ ] A controller test asserts the grace period is greater than the sum of all budgets.
 - [ ] `make generate-all` produces no diff.
@@ -236,6 +254,21 @@ make lint
 
 ## Ordering
 
-Tasks 1 and 2 are independent and can land together. Task 3 gates Task 5, since the drain has nothing to wait on without it. Task 4 is independent of 3 and can land in parallel. Task 6 depends on the budget constants settled in Task 5. Tasks 7 and 8 come last: metrics need the states to exist, and the e2e needs the whole sequence wired.
+Task 1 gates everything: it introduces both the lifecycle state and the shared budget package that Tasks 2, 3, 4 and 6 all consume.
 
-Task 9 can be drafted alongside Task 6 once the observable pod behaviour is fixed.
+```text
+Task 1 (state + budgets)
+ ├─ Task 2 (readiness)        ─┐
+ ├─ Task 3 (in-flight)        ─┤
+ ├─ Task 4 (session refusal)  ─┤
+ └─ Task 6 (pod spec)          │   ← needs budgets only, not 3/4
+                               ▼
+                        Task 5 (drain sequence)
+                               │
+                    ┌──────────┴──────────┐
+                 Task 7 (metrics)   Task 8 (e2e)
+```
+
+Tasks 2, 3 and 4 are independent of each other and can land in parallel once Task 1 is in. Task 5 needs 3 and 4, since the drain needs something to wait on and something to gate. Task 6 needs only the budgets from Task 1, so it can land early. Tasks 7 and 8 come last: metrics need the states to exist, and the e2e needs the whole sequence wired.
+
+Task 9 can be drafted alongside Task 6, once the observable pod behaviour is fixed.

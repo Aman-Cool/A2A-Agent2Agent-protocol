@@ -58,6 +58,14 @@ When an MCP client initializes a new session against a pod that has begun draini
 
 When an agent issues many concurrent `tools/call` requests across a rollout, they want failures to be distinguishable from upstream tool errors, so that the agent's retry logic can act on them safely rather than treating a side-effecting call as failed.
 
+### When an MCP developer tests their server against the gateway
+
+When an MCP developer runs their server behind the gateway and redeploys it during development, they want drain behaviour to be identical whether or not their server supports session termination, so that they are not debugging gateway lifecycle behaviour while trying to debug their own tool.
+
+### When an MCP developer's tool is slow
+
+When an MCP developer's tool takes longer than the drain deadline to return and the pod is terminating, they want the truncation to be attributable to the gateway drain rather than to look like a fault in their server, so that they do not chase a bug that is not theirs.
+
 ### When a platform engineer investigates a slow rollout
 
 When a rollout takes longer than expected, they want drain duration, requests completed during drain, and forced terminations exported as metrics, so that they can tell a slow drain from a stuck one without reading pod logs.
@@ -122,7 +130,7 @@ sequenceDiagram
 | Health handlers (`broker.go`) | `/readyz` fails while `draining` or `terminating`; `/healthz` reflects only whether the process can still operate. |
 | Router (`Router202511`) | Refuses to initialize new stateful backend sessions while draining; returns a retryable error. Existing sessions continue to route. |
 | ext_proc server | Tracks in-flight streams so the drain can wait on them; stops accepting new streams while draining. |
-| Broker HTTP server | Tracks in-flight requests; `http.Server.Shutdown` already waits for them within `serverDrainTimeout`. |
+| Broker HTTP server | `http.Server.Shutdown` is started at the beginning of the drain rather than in the teardown, so HTTP requests drain concurrently with ext_proc streams under `drainDeadline`. The `serverDrainTimeout` call in the teardown remains as the backstop for anything still open. |
 | Metrics | Exports drain duration, requests completed during drain, forced terminations. |
 
 ### State machine
@@ -130,16 +138,24 @@ sequenceDiagram
 | State | Entered by | `/healthz` | `/readyz` | New stateful sessions | In-flight work |
 | --- | --- | --- | --- | --- | --- |
 | `serving` | process start | 200 | `IsReady()` | accepted | served |
-| `draining` | SIGTERM | 200 | 503 | refused, retryable | waited for, up to `drainDeadline` |
+| `draining` | SIGTERM | 200 | 503 | refused, retryable | HTTP and ext_proc drained concurrently, up to `drainDeadline` |
 | `terminating` | drain deadline reached or work complete | 200 until teardown | 503 | refused | abandoned to the bounded teardown |
 
 The state is a single atomic value read on the request path. `/healthz` deliberately stays green through `draining` and `terminating`: a draining pod is not unhealthy, and failing liveness would invite the kubelet to restart a pod that is intentionally going away.
+
+### Linearization point for session refusal
+
+Refusing new sessions is a race unless the check has a defined position. `initializeMCPServerSession` calls `InitForClient` inside `initGroup.Do`, so a lifecycle check placed *before* `Do` can admit a caller that goes on to create a backend session after the transition to `draining` — the outcome the refusal exists to prevent.
+
+The check therefore belongs **inside** the singleflight function, after the existing cache lookup and before `InitForClient`. That makes the atomic state read the linearization point: any initialization that observes `serving` proceeds to completion and is accounted for as in-flight work; any that observes `draining` is refused before an upstream session exists. Callers that joined an already-running `Do` share its result, which is correct — that session was admitted while the pod was still serving.
+
+The transition to `draining` therefore does not need to cancel work already admitted; it only has to be visible to the next observation. This is why the drain waits for in-flight work rather than interrupting it.
 
 ### Budget arithmetic
 
 `preStop` consumes `terminationGracePeriodSeconds` — the grace clock starts when the pod is marked Terminating, and `preStop` runs inside it. The merged teardown already spends 27s, so the default 30s grace period leaves no room for a `preStop` sleep or a drain wait. The controller must therefore compute the grace period rather than leave it defaulted:
 
-```
+```text
 terminationGracePeriodSeconds = drainPropagationDelay   (preStop sleep)
                               + drainDeadline           (wait for in-flight work)
                               + serverDrainTimeout      (8s, merged)
@@ -149,7 +165,11 @@ terminationGracePeriodSeconds = drainPropagationDelay   (preStop sleep)
                               + safetyMargin
 ```
 
-With `drainPropagationDelay` 5s, `drainDeadline` 15s and a 5s margin that is 52s. The constants must be shared between `main.go` and the controller so the pod spec and the process cannot disagree; a mismatch means the kubelet kills the process mid-drain, which is the failure this design exists to prevent.
+With `drainPropagationDelay` 5s, `drainDeadline` 15s and a 5s margin that is 52s.
+
+The constants live in an importable package (`internal/drain`) rather than in `cmd/mcp-broker-router`, because `main` cannot be imported and the controller must derive the pod spec from the same source. Duplicating them would reintroduce exactly the drift this arithmetic exists to prevent.
+
+Two distinct claims are involved here and only one of them is guaranteed. The **local** arithmetic is sound by construction: the process cannot spend more than the sum of its own budgets, so it cannot outlast a grace period computed from them. The **propagation** assumption is not. Whether endpoint removal reaches Envoy within `drainPropagationDelay` depends on the endpoints controller, istiod convergence and cluster load, none of which the gateway controls, and Istio publishes no bound for it. 5s is a starting value drawn from common practice, not a guarantee. It must be validated against a real cluster before the design claims anything about it, and it should be tunable so an operator on a slow or large cluster can raise it. If propagation exceeds the delay, the pod stops accepting new stateful sessions while Envoy is still routing to it — the drain degrades to retryable errors rather than losing work, but the window is not eliminated.
 
 ### API Changes
 
@@ -170,7 +190,8 @@ None. The lifecycle state is process-local and deliberately not persisted: it de
 | In-flight `tools/call` at SIGTERM | Cut at the socket when the servers stop | Waited for within `drainDeadline`; completes if it can |
 | Long-lived ext_proc stream at SIGTERM | Bounded by `grpcDrainTimeout` (#1390), forced at 10s | Unchanged; drain gives it a chance to finish first |
 | Drain exceeds its deadline | n/a | Forced into `terminating`, counted in metrics, bounded teardown proceeds |
-| `preStop` + drain exceeds grace period | Pod killed mid-drain | Grace period computed from the budgets, so it cannot by construction |
+| `preStop` + drain exceeds grace period | Pod killed mid-drain | Grace period computed from the same budget constants, so the process cannot outspend it |
+| Endpoint removal slower than `drainPropagationDelay` | Requests hit a terminating pod; ext_proc fails closed; local 5xx | Not eliminated. New sessions get a retryable error instead of a reset; existing sessions still route. Mitigated by raising the delay, not by the grace period |
 | Node drain or eviction | Same as rollout, but no replacement pod is ready | Drain still bounded and clean; the window is an outage regardless |
 | Crash or SIGKILL | Nothing runs | Nothing runs. Backend sessions leak to Redis TTL and upstream timeout, per #1363 |
 | Upstream slow during teardown | Broker shutdown could block unboundedly | Bounded by `brokerDrainTimeout` (#1390) |
