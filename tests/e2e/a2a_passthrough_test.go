@@ -108,7 +108,11 @@ var _ = Describe("A2A Passthrough", Ordered, Label("A2A"), func() {
 				} `json:"task"`
 			} `json:"result"`
 		}
-		Expect(json.Unmarshal(body, &r)).To(Succeed(), "response: %s", string(body))
+		// soft parse: a non-A2A or empty response (e.g. with the flag off, where the
+		// request falls through the MCP path) yields no headers rather than a failure.
+		if err := json.Unmarshal(body, &r); err != nil {
+			return nil
+		}
 		for _, a := range r.Result.Task.Artifacts {
 			if a.Name != "request-info" || len(a.Parts) == 0 {
 				continue
@@ -244,8 +248,21 @@ var _ = Describe("A2A Passthrough", Ordered, Label("A2A"), func() {
 		}, TestTimeoutShort, TestRetryInterval).Should(Succeed())
 
 		By("Waiting for the route to be accepted by the gateway")
+		// a hand-authored route gets Istio's Accepted/ResolvedRefs conditions; the
+		// Programmed condition is only added by the MCP controller to routes it
+		// manages, so check Accepted here.
 		Eventually(func(g Gomega) {
-			g.Expect(VerifyHTTPRouteHasProgrammedCondition(ctx, k8sClient, a2aRoute.Name, a2aRoute.Namespace)).To(Succeed())
+			got := &gatewayapiv1.HTTPRoute{}
+			g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: a2aRoute.Name, Namespace: a2aRoute.Namespace}, got)).To(Succeed())
+			accepted := false
+			for _, p := range got.Status.Parents {
+				for _, c := range p.Conditions {
+					if c.Type == "Accepted" && c.Status == metav1.ConditionTrue {
+						accepted = true
+					}
+				}
+			}
+			g.Expect(accepted).To(BeTrue(), "route should be Accepted by the gateway")
 		}, TestTimeoutMedium, TestRetryInterval).Should(Succeed())
 	})
 
