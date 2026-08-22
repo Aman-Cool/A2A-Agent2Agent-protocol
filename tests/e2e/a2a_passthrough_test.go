@@ -345,10 +345,13 @@ var _ = Describe("A2A Passthrough", Ordered, Label("A2A"), func() {
 			Eventually(func(g Gomega) {
 				status, resp := a2aDo(http.MethodPost, a2aRoutePath, body, nil)
 				g.Expect(status).To(Equal(http.StatusOK), "body: %s", string(resp))
-				if code, ok := rpcErrorCode(resp); ok {
-					g.Expect(code).NotTo(Or(Equal(-32700), Equal(-32600)),
-						"unknown method must not be failed closed by the gateway; body: %s", string(resp))
-				}
+				// the agent answers -32601 (method not found) — distinct from the
+				// gateway's -32700/-32600 fail-closed — which proves the request was
+				// labelled and forwarded to the agent rather than rejected.
+				code, ok := rpcErrorCode(resp)
+				g.Expect(ok).To(BeTrue(), "expected the agent's JSON-RPC error; body: %s", string(resp))
+				g.Expect(code).To(Equal(-32601),
+					"unknown method must reach the agent; body: %s", string(resp))
 			}, TestTimeoutMedium, TestRetryInterval).Should(Succeed())
 		})
 
