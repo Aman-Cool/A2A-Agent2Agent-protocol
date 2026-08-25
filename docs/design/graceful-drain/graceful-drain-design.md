@@ -259,7 +259,7 @@ On the ceiling: no rollout `Strategy` is set, so Kubernetes defaults apply and a
 ## Future Considerations
 
 - **Context-aware broker cleanup.** `mcpBrokerImpl.Shutdown` discards its context; `activeMCP.Stop` blocks on `<-a.manager.done` and the pooled-session drain performs a blocking upstream `DELETE` per entry. #1390 bounded the wait, not the work. Threading a context through would make the bound real, and the in-flight tracking added here is the natural place to build from.
-- **Budgets on `MCPGatewayExtension`.** If operators need to tune the drain, the CRD is the right surface, since the controller owns the Deployment.
+- **Budgets on `MCPGatewayExtension`.** Constants are the right default: the controller owns the Deployment, so flags are not a surface an operator can reach anyway. The kill criterion is concrete — a real deployment where measured endpoint propagation exceeds `drainPropagationDelay` and the operator cannot rebuild the controller to raise it. At that point the budgets move onto `MCPGatewayExtension`, not onto flags.
 - **Durable cleanup obligations.** Declined in #1363 on security and lifetime grounds. If `Router202511` outlives expectations, or if a configurable replica count arrives, the analysis in that issue is the starting point.
 - **Drain on config change.** The same machinery could quiesce a pod during a disruptive config reload rather than only at termination.
 
