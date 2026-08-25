@@ -2,14 +2,14 @@
 
 ## Problem
 
-`failure_mode_allow` is `false` on the ext_proc filter (`internal/controller/mcpgatewayextension_controller.go:738`). That is deliberate and must stay: a router that is down must never become an auth bypass. The consequence is that any request Envoy sends to a router whose gRPC server has gone away is rejected with a local 5xx rather than degraded.
+`failure_mode_allow` is `false` on the ext_proc filter (`internal/controller/mcpgatewayextension_controller.go:752`). That is deliberate and must stay: a router that is down must never become an auth bypass. The consequence is that any request Envoy sends to a router whose gRPC server has gone away is rejected with a local 5xx rather than degraded.
 
 Pod termination produces exactly that window. When a pod is marked Terminating, endpoint removal and the `preStop` hook begin **in parallel**, and endpoint removal is eventually consistent: it propagates through the endpoints controller, then to istiod, then into the gateway's Envoy configuration. Until that completes Envoy still routes to the terminating pod.
 
 Nothing in the process currently accounts for that window:
 
 - There is no notion of a draining state. The process serves normally until SIGTERM, then tears down.
-- `/readyz` gates on `mcpBroker.IsReady()` (`cmd/mcp-broker-router/broker.go:57`), which reports whether any upstream is reachable — not whether this pod is terminating.
+- `/readyz` gates on `mcpBroker.IsReady()` (`cmd/mcp-broker-router/broker.go:65`), which reports whether any upstream is reachable — not whether this pod is terminating.
 - The pod spec sets no `preStop` hook and no `terminationGracePeriodSeconds` (`internal/controller/broker_router.go`), so the default 30s applies with nothing using it.
 
 Two prior fixes bounded the teardown but did not drain anything. #1362 registered SIGTERM, so the shutdown path runs at all under Kubernetes. #1390 bounded `GracefulStop`, bounded the broker shutdown, and moved telemetry flushing last so drain-window traces and metrics survive. What remains is coordination: nothing tells the pod to stop taking new work, and nothing waits for the work it already has.
@@ -25,7 +25,7 @@ Add an explicit lifecycle state to the broker/router process — `serving`, `dra
 - No new stateful backend sessions once draining begins, with a retryable response where the protocol and response state allow one.
 - In-flight HTTP and ext_proc work is waited for within a configured deadline.
 - `preStop` and `terminationGracePeriodSeconds` wired so the drain fits inside the grace period by construction.
-- Drain observability: duration, requests completed during drain, forced terminations.
+- Drain observability that survives the pod: see [Where drain telemetry goes](#where-drain-telemetry-goes).
 - A rollout-under-load e2e that asserts the drain guarantee.
 
 ## Non-Goals
@@ -33,7 +33,7 @@ Add an explicit lifecycle state to the broker/router process — `serving`, `dra
 - **Durable cleanup of backend sessions owned by a departing pod.** Declined in #1363: replaying an upstream `DELETE` from another process requires that session's credentials, and persisting per-user credentials for later replay is a security trade the gateway should not make. Legacy sessions fall back to Redis TTL and the upstream's own session timeout.
 - **Live session migration.** Reusing a backend session ID from Redis is not the same problem as transferring an active SDK transport or an in-flight request.
 - **Zero client-visible errors.** See [What this cannot promise](#what-this-cannot-promise).
-- **Configurable replica count.** `replicas` is hardcoded to `int32(1)` (`internal/controller/broker_router.go:93`) with no field in `api/v1alpha1`. Out of scope here.
+- **Configurable replica count.** `replicas` is hardcoded to `int32(1)` (`internal/controller/broker_router.go:101`) with no field in `api/v1alpha1`. Out of scope here.
 - **Making broker cleanup context-aware.** `mcpBrokerImpl.Shutdown` discards its context; #1390 bounded the *wait* rather than the work. The deeper fix belongs with in-flight work tracking, see [Future Considerations](#future-considerations).
 
 ## Job Stories
@@ -83,7 +83,7 @@ Both merged:
 
 Two mechanisms could withdraw traffic before teardown, and the choice is not arbitrary.
 
-**Readiness cannot do it.** The generated probe is `PeriodSeconds: 10`, `FailureThreshold: 3` (`internal/controller/broker_router.go:235-248`). Failing `/readyz` therefore takes up to 30 seconds to mark the pod unready — longer than the entire 27s shutdown budget. Readiness gating is worth having for observability and for cases where the pod is not being deleted, but it cannot be the mechanism that stops traffic during termination.
+**Readiness cannot do it.** The generated probe is `PeriodSeconds: 10`, `FailureThreshold: 3` (`internal/controller/broker_router.go:235-247`). Failing `/readyz` therefore takes up to 30 seconds to mark the pod unready — longer than the entire 27s shutdown budget. Readiness gating is worth having for observability and for cases where the pod is not being deleted, but it cannot be the mechanism that stops traffic during termination.
 
 **Pod deletion does it, and `preStop` buys the time.** Endpoint removal starts when the pod is marked Terminating, independent of readiness. `preStop` runs in the same window, so a sleep there lets propagation complete while the process is still serving.
 
@@ -129,7 +129,7 @@ sequenceDiagram
 | Broker/router `main.go` | Owns the lifecycle state; registers SIGTERM; sequences drain then the existing bounded teardown. |
 | Health handlers (`broker.go`) | `/readyz` fails while `draining` or `terminating`; `/healthz` reflects only whether the process can still operate. |
 | Router (`Router202511`) | Refuses to initialize new stateful backend sessions while draining; returns a retryable error. Existing sessions continue to route. |
-| ext_proc server | Tracks in-flight streams so the drain can wait on them; stops accepting new streams while draining. |
+| ext_proc server | Tracks in-flight **requests** so the drain can wait on them. Keeps accepting and serving streams throughout — see [What draining does not do](#what-draining-does-not-do). |
 | Broker HTTP server | `http.Server.Shutdown` is started at the beginning of the drain rather than in the teardown, so HTTP requests drain concurrently with ext_proc streams under `drainDeadline`. The `serverDrainTimeout` call in the teardown remains as the backstop for anything still open. |
 | Metrics | Exports drain duration, requests completed during drain, forced terminations. |
 
@@ -142,6 +142,43 @@ sequenceDiagram
 | `terminating` | drain deadline reached or work complete | 200 until teardown | 503 | refused | abandoned to the bounded teardown |
 
 The state is a single atomic value read on the request path. `/healthz` deliberately stays green through `draining` and `terminating`: a draining pod is not unhealthy, and failing liveness would invite the kubelet to restart a pod that is intentionally going away.
+
+### What draining does not do
+
+Two things a draining pod must keep doing, both of which an earlier draft of this design got wrong.
+
+**It keeps accepting ext_proc streams.** Refusing a stream is not a polite signal — with `failure_mode_allow: false`, Envoy turns a failed ext_proc stream into a local 5xx. Refusing streams while draining would manufacture exactly the failure this design exists to remove, and would be worst precisely in the window the design admits is unbounded, where propagation is slower than `drainPropagationDelay`. Refusal is scoped to new backend *session initialization*, which the router answers with an immediate response rather than a transport failure.
+
+**It keeps serving existing sessions.** Backend session mappings outlive pod replacement by design, so a draining pod continues routing requests that already have one.
+
+### What counts as in-flight work
+
+`ExtProcServer.Process` runs one goroutine per ext_proc stream, looping on `stream.Recv()` until the stream ends (`internal/mcp-router/ext_proc_adapter.go`). A stream's lifetime is the HTTP stream's lifetime, and MCP streamable-HTTP clients hold a long-lived `GET /mcp` SSE response open — so counting *streams* would count idle held-open connections as work. Every termination would then burn the full `drainDeadline` waiting on connections that have nothing in flight, and `grpcDrainTimeout` behind it on the same streams, turning a worst-case bound into the normal cost of every rollout.
+
+The tracked unit is therefore an **in-flight request**: incremented when a request's headers are received, released when that request's terminal response has been sent. An idle SSE stream holds no in-flight requests and does not delay the drain.
+
+> Open verification: whether Envoy holds the ext_proc stream open for the duration of an SSE body under the current `response_body_mode` has not been confirmed against a live gateway. It belongs with the propagation measurement in Task 6, since both are cluster-observable facts this design currently assumes.
+
+### Where drain telemetry goes
+
+Drain outcomes cannot be reported as Prometheus metrics, and an earlier draft of this design assumed they could.
+
+`NewMetricsProvider` builds a Prometheus **pull** exporter (`internal/otel/metrics.go`) served from the metrics HTTP server — the code comment says "no OTLP endpoint needed". There is nothing to flush: `MetricsProvider.Shutdown` stops the MeterProvider and no value leaves the process. Scraping cannot rescue it either, because `metricsServer.Shutdown` runs early in the teardown and the pod exits inside a single scrape interval. Any counter incremented during drain is written to a registry nobody will ever read. #1390's ordering change saves traces and OTLP log export; it does not and cannot save pull-based metrics.
+
+Drain outcome is therefore reported on the two transports that do leave the process before it exits:
+
+- **An OTLP span** covering the drain, with duration, requests completed, requests outstanding at the deadline, and whether termination was forced. Traces flush last, inside `telemetryFlushTimeout`.
+- **A structured log record** carrying the same fields. `MultiHandler` (`internal/otel/logging.go`) fans records to stdout as well as OTLP, so this survives even with OTLP disabled — and stdout is what an e2e can assert against.
+
+Prometheus counters may still be registered for steady-state observability, but nothing — design, tasks, or e2e — may depend on a drain-time metric being scraped. If push metrics are wanted later, that means an OTLP metric exporter with an explicit `ForceFlush` inside the telemetry budget, which is a larger change than this design takes on.
+
+### The retryable response
+
+The refusal needs a concrete contract, since documentation and three e2e cases turn on it.
+
+A draining pod answers a request that would create a new backend session with **HTTP 503** and a `Retry-After: 1` header, carrying a JSON-RPC error body with code **-32000** (implementation-defined server error) and a message identifying gateway drain. 503 is the correct HTTP semantic — the condition is transient and the request should be retried elsewhere — and the router already returns typed HTTP statuses through `RouterError`, so this needs no new mechanism.
+
+> Open verification: whether the official Go SDK retries a 503 from `initialize` transparently, or surfaces it to the caller, has not been confirmed. The job story above assumes an SDK that reconnects. Task 8 must observe actual client behaviour and, if the SDK surfaces it, the guidance in the user documentation changes from "your client will retry" to "your client must retry". The gateway's contract is unaffected either way.
 
 ### Linearization point for session refusal
 
@@ -156,16 +193,22 @@ The transition to `draining` therefore does not need to cancel work already admi
 `preStop` consumes `terminationGracePeriodSeconds` — the grace clock starts when the pod is marked Terminating, and `preStop` runs inside it. The merged teardown already spends 27s, so the default 30s grace period leaves no room for a `preStop` sleep or a drain wait. The controller must therefore compute the grace period rather than leave it defaulted:
 
 ```text
-terminationGracePeriodSeconds = drainPropagationDelay   (preStop sleep)
-                              + drainDeadline           (wait for in-flight work)
-                              + serverDrainTimeout      (8s, merged)
-                              + brokerDrainTimeout      (5s, merged)
-                              + grpcDrainTimeout        (10s, merged)
-                              + telemetryFlushTimeout   (4s, merged)
-                              + safetyMargin
+terminationGracePeriodSeconds = drainPropagationDelay   (preStop sleep, 5s)
+                              + drainDeadline           (HTTP + ext_proc drained concurrently, 8s)
+                              + brokerDrainTimeout       (5s, merged)
+                              + grpcDrainTimeout         (10s, merged)
+                              + telemetryFlushTimeout    (4s, merged)
+                              + safetyMargin             (5s)
+                              = 37s
 ```
 
-With `drainPropagationDelay` 5s, `drainDeadline` 15s and a 5s margin that is 52s.
+Three things this arithmetic gets right that an earlier draft did not.
+
+`serverDrainTimeout` does not appear as a separate term. Task 5 starts `brokerServer.Shutdown` at the beginning of the drain, so the HTTP drain happens *inside* `drainDeadline`; charging both would bill the same wait twice. The `serverDrainTimeout` call remains in the teardown as a backstop, but it can only be reached with an already-drained server, so it contributes nothing to the worst case. `metricsServer.Shutdown` shares it and is likewise not a separate term.
+
+`drainDeadline` is 8s, not 15s, because Envoy's ext_proc `message_timeout` is `"10s"` (`internal/controller/mcpgatewayextension_controller.go:757`). Waiting longer than that means spending the tail of the budget on work Envoy has already abandoned. The deadline is deliberately set below the message timeout so the two cannot disagree about whether a request is still alive; if `message_timeout` is ever raised, `drainDeadline` should move with it.
+
+37s rather than 52s matters beyond tidiness. `RestartDeploymentAndWait` (`tests/e2e/kubectl_helpers.go`) blocks until the old pod is gone, and with `replicas=1` and `maxUnavailable=0` that is the full grace period on every e2e that restarts the deployment. A loose bound is paid on every CI run.
 
 The constants live in an importable package (`internal/drain`) rather than in `cmd/mcp-broker-router`, because `main` cannot be imported and the controller must derive the pod spec from the same source. Duplicating them would reintroduce exactly the drift this arithmetic exists to prevent.
 

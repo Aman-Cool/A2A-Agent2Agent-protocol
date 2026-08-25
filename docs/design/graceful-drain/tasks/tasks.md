@@ -10,9 +10,11 @@ Issue: #1363
 What this builds on, all already merged:
 
 - `cmd/mcp-broker-router/main.go` — SIGTERM registered (#1362). Shutdown sequence bounded (#1390): `serverDrainTimeout` 8s, `brokerDrainTimeout` 5s, `grpcDrainTimeout` 10s, `telemetryFlushTimeout` 4s, telemetry flushed last.
-- `cmd/mcp-broker-router/broker.go:53-63` — `/healthz` returns a static 200; `/readyz` gates on `mcpBroker.IsReady()`.
+- `cmd/mcp-broker-router/broker.go:61-70` — `/healthz` returns a static 200; `/readyz` gates on `mcpBroker.IsReady()`.
 - `internal/broker/broker.go` — `IsReady()` returns true when no servers are configured, or when any manager reports ready.
-- `internal/controller/broker_router.go` — generates the Deployment. `replicas := int32(1)` at `:93`; readiness probe at `:235-248` with `PeriodSeconds: 10`, `FailureThreshold: 3`; Service exposes `http` and `grpc` off the same pod at `:285-300`. No `preStop`, no `terminationGracePeriodSeconds`.
+- `internal/controller/broker_router.go` — generates the Deployment. `replicas := int32(1)` at `:101`; readiness probe at `:235-247` with `PeriodSeconds: 10`, `FailureThreshold: 3`; Service exposes `http` and `grpc` off the same pod at `:295-301`. No `preStop`, no `terminationGracePeriodSeconds`.
+- `internal/otel/metrics.go` — Prometheus **pull** exporter only; no OTLP metric push exists. Drain-time counters cannot be scraped, which is why Task 7 uses spans and logs.
+- `internal/controller/mcpgatewayextension_controller.go:757` — ext_proc `message_timeout` is `"10s"`, which bounds `drainDeadline` from above.
 - `internal/mcp-router/` — ext_proc server. No in-flight stream accounting today.
 - `internal/routing/router_202511.go` — `initializeMCPServerSession` creates backend sessions lazily, guarded by a singleflight group.
 
@@ -87,18 +89,20 @@ Depends on Task 1 for the state type and the tracker's home.
 
 **Acceptance criteria:**
 
-- [ ] ext_proc streams are counted on open and released on close, including on error paths.
-- [ ] New ext_proc streams are refused once draining.
+- [ ] The tracked unit is an in-flight **request**, incremented when request headers are received and released when that request's terminal response has been sent — **not** the ext_proc stream. `Process` runs one goroutine per stream for the stream's lifetime, and MCP clients hold `GET /mcp` SSE responses open, so counting streams would count idle connections as work and burn the full deadline on every termination.
+- [ ] Streams are **not** refused while draining. With `failure_mode_allow: false` a refused stream is an Envoy local 5xx, which is the failure this design removes. Refusal belongs to session initialization (Task 4) only.
+- [ ] Release happens on error and cancellation paths, not only on clean completion.
 - [ ] A `Wait(ctx)` returns when the count reaches zero or the context expires, whichever first.
 - [ ] Counting adds no allocation on the per-request path, consistent with `docs/design/performance.md`.
-- [ ] Unit tests with mock ext_proc streams cover open, close, error-path release, and refusal while draining.
+- [ ] An idle SSE stream with no in-flight request does not delay the drain — covered by an explicit test.
+- [ ] Unit tests with mock ext_proc streams cover increment, terminal-response release, error-path release, and the idle-stream case.
 
 **Verification:**
 
 ```bash
 make lint
-go test ./internal/mcp-router/... -race -count=1
-go test ./internal/routing/... -bench=. -benchmem -run='^$'
+go test ./internal/mcp-router/... ./internal/drain/... -race -count=1
+go test ./internal/mcp-router/... -bench=. -benchmem -run='^$'
 ```
 
 ---
@@ -162,13 +166,14 @@ go test ./cmd/... -race -count=1
 **Files:**
 
 - `internal/controller/broker_router.go`
-- `internal/controller/broker_router_test.go`
+- `internal/controller/deployment_test.go` — existing home for generated-Deployment assertions; `broker_router_test.go` does not exist
 - `config/mcp-system/deployment-broker.yaml`
 - `charts/mcp-gateway/templates/`
 
 **Acceptance criteria:**
 
-- [ ] The generated Deployment sets a `preStop` hook sleeping `drainPropagationDelay`, imported from `internal/drain`.
+- [ ] The generated Deployment sets a `preStop` hook sleeping `drainPropagationDelay`, imported from `internal/drain`, as `exec: ["/bin/sh","-c","sleep N"]`. The final image is Alpine running as UID 65532 (`Dockerfile`), so a shell is available. Native `lifecycle.preStop.sleep` is cleaner and survives a move to distroless, but it is GA only from Kubernetes 1.32 and this repo declares no supported floor — note it as a follow-up rather than adopting it here.
+- [ ] Confirm against a live gateway whether Envoy holds the ext_proc stream open for the duration of an SSE body, since Task 3's in-flight accounting assumes it may. Record the finding in the design.
 - [ ] `terminationGracePeriodSeconds` is `drain.TotalGracePeriod()`, never a literal.
 - [ ] `drainPropagationDelay` is validated against a real cluster: measure the interval between pod deletion and the endpoint disappearing from the gateway's Envoy config, and record the observed value in the design. Raise the default if 5s does not cover it.
 - [ ] The static manifest and the Helm chart match the controller output.
@@ -179,31 +184,37 @@ go test ./cmd/... -race -count=1
 
 ```bash
 make lint
+make test-unit
 make generate-all && git diff --exit-code
 make test-controller-integration
 ```
 
 ---
 
-### Task 7: Drain metrics (CONNLINK-TBD)
+### Task 7: Drain telemetry (CONNLINK-TBD)
+
+Not metrics. `internal/otel/metrics.go` builds a Prometheus **pull** exporter, so a counter incremented during drain is written to a registry that is never scraped: `metricsServer.Shutdown` closes the endpoint early in the teardown and the pod exits well inside one scrape interval. See the design's *Where drain telemetry goes*.
 
 **Files:**
 
-- `internal/otel/metrics.go`
-- `cmd/mcp-broker-router/lifecycle.go`
+- `internal/drain/telemetry.go` (new)
+- `internal/drain/telemetry_test.go` (new)
+- `cmd/mcp-broker-router/main.go`
 
 **Acceptance criteria:**
 
-- [ ] Drain duration, requests completed during drain, and forced terminations are exported.
-- [ ] Naming follows the existing `mcp_broker_*` conventions.
-- [ ] Metrics emitted during drain are actually exported, which #1390's ordering change makes possible.
-- [ ] Unit tests assert the instruments are registered and recorded.
+- [ ] The drain emits an OTLP span carrying duration, requests completed, requests outstanding at the deadline, and whether termination was forced.
+- [ ] The same fields are emitted as a structured log record, which reaches stdout via `MultiHandler` even when OTLP is disabled.
+- [ ] The span is recorded before `telemetryFlushTimeout` begins, so it is flushed rather than dropped.
+- [ ] No acceptance criterion anywhere depends on a drain-time Prometheus counter being scraped.
+- [ ] Any steady-state counters added are documented as not observable during drain.
+- [ ] Unit tests assert the span attributes and log fields using the existing `tracetest` helpers.
 
 **Verification:**
 
 ```bash
 make lint
-go test ./internal/otel/... -race -count=1
+go test ./internal/drain/... ./internal/otel/... -race -count=1
 ```
 
 ---

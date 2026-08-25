@@ -44,7 +44,8 @@ When an MCP client developer sees failures coincide with a gateway rollout, they
 
 **Cover:**
 
-- The retryable error returned when a draining pod refuses a new session, and the correct client response
+- The exact contract: HTTP 503 with `Retry-After`, JSON-RPC error code -32000, and what the client should do with it
+- Whether the official Go SDK retries this transparently or surfaces it — Task 8 establishes which, and the guidance is either "your client will retry" or "your client must retry"
 - Why a side-effecting tool call whose response was lost cannot be retried safely by the gateway on the client's behalf
 - Existing sessions are unaffected by drain; reconnection is not required
 
