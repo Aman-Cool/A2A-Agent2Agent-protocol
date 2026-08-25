@@ -13,7 +13,7 @@
 </div>
 
 > [!IMPORTANT]
-> This is a **workshop fork** of [Kuadrant/mcp-gateway](https://github.com/Kuadrant/mcp-gateway) (the original project README lives [there](https://github.com/Kuadrant/mcp-gateway#readme)). The agreed home for this work is upstream.., the design **landed via [#1114](https://github.com/Kuadrant/mcp-gateway/pull/1114) (merged)**, and code now upstreams **incrementally, in phases** — a router-only passthrough cut first (behind an experimental `--enable-a2a` flag), with registration/discovery and task ownership following as later phases. The fork is where the whole design was proven end to end ; each phase carves the minimal upstream slice from it. The fork exists so A2A exploration can move fast without carrying MCP regression risk into the main repo ; workshop in the fork, home in-tree.
+> This is a **workshop fork** of [Kuadrant/mcp-gateway](https://github.com/Kuadrant/mcp-gateway) (the original project README lives [there](https://github.com/Kuadrant/mcp-gateway#readme)). The agreed home for this work is upstream.., the design **landed via [#1114](https://github.com/Kuadrant/mcp-gateway/pull/1114) (merged)**, and code now upstreams **incrementally, in phases** — the router-only passthrough cut landing first (behind an experimental `--enable-a2a` flag), **now merged as [#1371](https://github.com/Kuadrant/mcp-gateway/pull/1371)** (e2e in review as [#1418](https://github.com/Kuadrant/mcp-gateway/pull/1418)), with registration/discovery and task ownership following as later phases. The fork is where the whole design was proven end to end ; each phase carves the minimal upstream slice from it. The fork exists so A2A exploration can move fast without carrying MCP regression risk into the main repo ; workshop in the fork, home in-tree.
 
 This fork is where I'm prototyping Agent2Agent (A2A) protocol support for Kuadrant's MCP Gateway, as part of the CNCF LFX mentorship *"Prototype A2A protocol support in the agentic gateway"* (2026 Term 2), mentored by the Kuadrant maintainers. Everything here traces back to an upstream artifact : the design doc, the test server, the review threads and this README is the map.
 
@@ -144,7 +144,7 @@ The pivot in the middle is the story worth telling: the original design routed b
 | Workstream | Where | State |
 |---|---|---|
 | Design doc (routing, CRD, card serving, auth, task store) | [Kuadrant#1114](https://github.com/Kuadrant/mcp-gateway/pull/1114) | **merged** — approved by David ; the ratified design, with an implementation-phases section landing it incrementally behind `--enable-a2a` (phase 1 passthrough ; registration/discovery and ownership as phases 2–3) |
-| A2A passthrough first cut (router only) | [Kuadrant#1333](https://github.com/Kuadrant/mcp-gateway/issues/1333) | **scope agreed** — `--enable-a2a` parses `/a2a` traffic and lifts `x-a2a-method`/`x-a2a-agent` into headers for Istio Telemetry + AuthPolicy ; no CRD, no catalog, ownership deferred to upstream agents. Next PR up |
+| A2A passthrough first cut (router only) | [Kuadrant#1371](https://github.com/Kuadrant/mcp-gateway/pull/1371) | **merged** — `--enable-a2a` parses `/a2a` traffic and lifts `x-a2a-method`/`x-a2a-agent` into headers for Istio Telemetry + AuthPolicy ; no CRD, no catalog, ownership deferred to upstream agents ; e2e coverage in review as [#1418](https://github.com/Kuadrant/mcp-gateway/pull/1418) |
 | A2A test server (e2e target) | [Kuadrant#1200](https://github.com/Kuadrant/mcp-gateway/pull/1200) | **approved** — rebuilt clean on upstream main (v1.0 ProtoJSON wire, proto-verified against `a2a.proto@v1.0.1`), David-approved, CI green |
 | Original PoC (federated card broker) | [Kuadrant#986](https://github.com/Kuadrant/mcp-gateway/pull/986) | closed... pre-pivot, superseded by the design |
 | Spike 1 — per-method response ModeOverride | [this fork, PR #1](../../pull/1) | **merged** : verified against real Envoy, BUFFERED + STREAMED both honored mid-request ; surfaced the content-length constraint (recorded in the design doc) |
@@ -152,7 +152,7 @@ The pivot in the middle is the story worth telling: the original design routed b
 | Upstream sync + fork hygiene | [this fork, #20 / #14 / #15](../../pulls?q=is%3Apr+is%3Amerged) | **merged** : adopted upstream's api/v1 gateway promotion (A2A stays v1alpha1) ; credential-rotation controller tests + the credential-label doc |
 | Discovery steel thread (card cache + catalog + wiring) | [this fork, #19/#21/#28/#22](../../pulls?q=is%3Apr+is%3Amerged) | **merged + live** : pluggable card store, runtime `a2aAgents` config, `A2AAgentManager` (ticker + conditional GET + SHA-256, stale-on-error, refresh-on-change), verbatim card serving, RFC 9727 catalog, binary + gateway-route wiring |
 | End-to-end demos | [this fork, #31](../../pull/31) + `demos/a2a-invocation` | **merged** : `demos/a2a-discovery/demo.sh` (register → catalog hot-reload → card byte-identical → deregister → MCP regression) and `demos/a2a-invocation/demo.sh` (SendMessage routed → completed, task-ID passthrough, streaming, fail-closed rejects) — both verified live on Kind |
-| Router (invocation + task store + SSE observer) | [this fork, #42/#44/#45](../../pulls?q=is%3Apr+is%3Amerged) | **merged + live-verified** : namespace-qualified routing, per-request auth, task-ID **passthrough** (settled with David — the path carries routing, no ID rewrite), insert-only `(agent, id) → principal` ownership store, read-only SSE observer. The full prototype ; upstream lands its phase-1 subset via #1333 |
+| Router (invocation + task store + SSE observer) | [this fork, #42/#44/#45](../../pulls?q=is%3Apr+is%3Amerged) | **merged + live-verified** : namespace-qualified routing, per-request auth, task-ID **passthrough** (settled with David — the path carries routing, no ID rewrite), insert-only `(agent, id) → principal` ownership store, read-only SSE observer. The full prototype ; upstream landed its phase-1 subset via [#1371](https://github.com/Kuadrant/mcp-gateway/pull/1371) |
 | Stretch + mentor-gated backlog | [issues](../../issues) | deferred scope, each with its why.., plus two follow-ups the live run surfaced (#27 fail-closed card check, #30 refresh-on-change ✓) |
 
 ## The plan
@@ -175,7 +175,8 @@ gantt
     section Phase 3 — prove & upstream
     Invocation + discovery e2e            :done,   p3a, 2026-07-22, 2026-07-28
     Design merged upstream (1114)         :done,   p3b, 2026-08-04, 1d
-    Upstream in phases (1333 first cut)   :active, p3c, 2026-08-05, 2026-08-24
+    Phase 1 passthrough merged (1371)     :done,   p3c, 2026-08-05, 2026-08-20
+    Phase 1 e2e in review (1418)          :active, p3d, 2026-08-21, 2026-08-27
 ```
 
 **Landing upstream, in phases.** The fork proved the whole design ; upstream takes it incrementally, gated behind an experimental `--enable-a2a` flag (default off) so nothing A2A touches the mature MCP path unless a user opts in. **Phase 1** — router-only passthrough for auditing, auth and observability ([#1333](https://github.com/Kuadrant/mcp-gateway/issues/1333)) : parse `/a2a` traffic, lift `x-a2a-method`/`x-a2a-agent` into headers for Istio Telemetry and AuthPolicy, no CRD, no catalog, task ownership deferred to the upstream agents. **Phase 2** — the `A2AAgentRegistration` CRD, controller and broker card serving/catalog (gated on where A2A lands long-term and on the broker settling after the new MCP spec work). **Phase 3** — gateway-side task ownership and SSE lifecycle observation. Phases 2–3 already exist, proven, in this fork.
@@ -188,9 +189,10 @@ gantt
 - [x] Broker: card cache behind a pluggable interface, RFC 9727 catalog endpoint — *merged and running end to end on Kind ([demo](demos/a2a-discovery/demo.sh))*
 - [x] Router: namespace-qualified path-per-agent routing, per-request auth, task-ID passthrough with a `(agent, id) → principal` ownership record — *merged + live-verified on Kind ([demo](demos/a2a-invocation/demo.sh))* ; read-only SSE observer alongside it
 - [x] E2E: discovery + invocation specs (routing, streaming, fail-closed rejects, MCP regression) — *both suites merged in-fork*
-- [ ] Upstream the phase-1 passthrough cut ([#1333](https://github.com/Kuadrant/mcp-gateway/issues/1333)) — the design (#1114) and test server (#1200) are already upstream
+- [x] Upstream the phase-1 passthrough cut — **merged as [#1371](https://github.com/Kuadrant/mcp-gateway/pull/1371)** (router + `--enable-a2a` + guide) ; e2e coverage in review as [#1418](https://github.com/Kuadrant/mcp-gateway/pull/1418) ; the design (#1114) and test server (#1200) were already upstream
+- [ ] Upstream phases 2–3 (registration/discovery, then task ownership) — proven in-fork, gated on the CRD's long-term home and the broker settling after the new MCP spec work
 
-The design is merged upstream and the whole design is proven in-fork ; what remains is upstreaming it in phases (above), starting with the router-only passthrough cut.
+The design is merged upstream and the whole design is proven in-fork ; the router-only passthrough cut has now landed upstream ([#1371](https://github.com/Kuadrant/mcp-gateway/pull/1371), with e2e in review as [#1418](https://github.com/Kuadrant/mcp-gateway/pull/1418)) — what remains is upstreaming the later phases (registration/discovery, then task ownership).
 
 ## Design decisions, and why
 
