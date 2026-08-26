@@ -3,8 +3,6 @@
 Design: [../graceful-drain-design.md](../graceful-drain-design.md)
 Issue: #1363
 
-> Jira story references are placeholders pending stories under CONNLINK.
-
 ## Existing Code Analysis
 
 What this builds on, all already merged:
@@ -22,7 +20,7 @@ What does not exist and must be added: any notion of lifecycle state, any accoun
 
 ---
 
-### Task 1: Lifecycle state and shared budgets (CONNLINK-TBD)
+### Task 1: Lifecycle state and shared budgets
 
 The budgets cannot live in `cmd/mcp-broker-router`: that is `package main` and Go cannot import it, so the controller in Task 6 would have to duplicate the values — reintroducing exactly the drift the design exists to prevent. They go in an importable package from the start, alongside the lifecycle state that Tasks 2, 3 and 4 all depend on.
 
@@ -53,7 +51,7 @@ go test ./cmd/... -race -count=1
 
 ---
 
-### Task 2: Readiness reflects drain (CONNLINK-TBD)
+### Task 2: Readiness reflects drain
 
 **Files:**
 
@@ -76,7 +74,7 @@ go test ./cmd/... -race -count=1
 
 ---
 
-### Task 3: In-flight work accounting (CONNLINK-TBD)
+### Task 3: In-flight work accounting
 
 Depends on Task 1 for the state type and the tracker's home.
 
@@ -107,7 +105,7 @@ go test ./internal/mcp-router/... -bench=. -benchmem -run='^$'
 
 ---
 
-### Task 4: Refuse new stateful sessions while draining (CONNLINK-TBD)
+### Task 4: Refuse new stateful sessions while draining
 
 **Files:**
 
@@ -134,7 +132,7 @@ go test ./internal/routing/... -race -count=1
 
 ---
 
-### Task 5: Drain sequence in `run()` (CONNLINK-TBD)
+### Task 5: Drain sequence in `run()`
 
 **Files:**
 
@@ -161,7 +159,7 @@ go test ./cmd/... -race -count=1
 
 ---
 
-### Task 6: Pod lifecycle wiring (CONNLINK-TBD)
+### Task 6: Pod lifecycle wiring
 
 **Files:**
 
@@ -191,7 +189,7 @@ make test-controller-integration
 
 ---
 
-### Task 7: Drain telemetry (CONNLINK-TBD)
+### Task 7: Drain telemetry
 
 Not metrics. `internal/otel/metrics.go` builds a Prometheus **pull** exporter, so a counter incremented during drain is written to a registry that is never scraped: `metricsServer.Shutdown` closes the endpoint early in the teardown and the pod exits well inside one scrape interval. See the design's *Where drain telemetry goes*.
 
@@ -219,7 +217,7 @@ go test ./internal/drain/... ./internal/otel/... -race -count=1
 
 ---
 
-### Task 8: Rollout-under-load e2e (CONNLINK-TBD)
+### Task 8: Rollout-under-load e2e
 
 **Files:**
 
@@ -242,7 +240,7 @@ make test-e2e
 
 ---
 
-### Task 9: Documentation (CONNLINK-TBD)
+### Task 9: Documentation
 
 **Files:**
 
