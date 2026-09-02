@@ -8,11 +8,11 @@ Issue: #1363
 What this builds on, all already merged:
 
 - `cmd/mcp-broker-router/main.go` — SIGTERM registered (#1362). Shutdown sequence bounded (#1390): `serverDrainTimeout` 8s, `brokerDrainTimeout` 5s, `grpcDrainTimeout` 10s, `telemetryFlushTimeout` 4s, telemetry flushed last.
-- `cmd/mcp-broker-router/broker.go:61-70` — `/healthz` returns a static 200; `/readyz` gates on `mcpBroker.IsReady()`.
+- the `/healthz` and `/readyz` handlers in `cmd/mcp-broker-router/broker.go` — `/healthz` returns a static 200; `/readyz` gates on `mcpBroker.IsReady()`.
 - `internal/broker/broker.go` — `IsReady()` returns true when no servers are configured, or when any manager reports ready.
-- `internal/controller/broker_router.go` — generates the Deployment. `replicas := int32(1)` at `:101`; readiness probe at `:235-247` with `PeriodSeconds: 10`, `FailureThreshold: 3`; Service exposes `http` and `grpc` off the same pod at `:295-301`. No `preStop`, no `terminationGracePeriodSeconds`.
+- `internal/controller/broker_router.go` — generates the Deployment. `replicas := int32(1)`, hardcoded with no field in `api/v1alpha1`; a `ReadinessProbe` with `PeriodSeconds: 10` and `FailureThreshold: 3`; a Service exposing `http` and `grpc` off the same pod. No `preStop`, no `terminationGracePeriodSeconds`.
 - `internal/otel/metrics.go` — Prometheus **pull** exporter only; no OTLP metric push exists. Drain-time counters cannot be scraped, which is why Task 7 uses spans and logs.
-- `internal/controller/mcpgatewayextension_controller.go:757` — ext_proc `message_timeout` is `"10s"`, which bounds `drainDeadline` from above.
+- the `message_timeout` key in `internal/controller/mcpgatewayextension_controller.go` — ext_proc `message_timeout` is `"10s"`, which bounds `drainDeadline` from above.
 - `internal/mcp-router/` — ext_proc server. No in-flight stream accounting today.
 - `internal/routing/router_202511.go` — `initializeMCPServerSession` creates backend sessions lazily, guarded by a singleflight group.
 

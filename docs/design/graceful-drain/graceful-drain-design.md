@@ -2,14 +2,14 @@
 
 ## Problem
 
-`failure_mode_allow` is `false` on the ext_proc filter (`internal/controller/mcpgatewayextension_controller.go:752`). That is deliberate and must stay: a router that is down must never become an auth bypass. The consequence is that any request Envoy sends to a router whose gRPC server has gone away is rejected with a local 5xx rather than degraded.
+`failure_mode_allow` is `false` on the ext_proc filter (`internal/controller/mcpgatewayextension_controller.go`). That is deliberate and must stay: a router that is down must never become an auth bypass. The consequence is that any request Envoy sends to a router whose gRPC server has gone away is rejected with a local 5xx rather than degraded.
 
 Pod termination produces exactly that window. When a pod is marked Terminating, endpoint removal and the `preStop` hook begin **in parallel**, and endpoint removal is eventually consistent: it propagates through the endpoints controller, then to istiod, then into the gateway's Envoy configuration. Until that completes Envoy still routes to the terminating pod.
 
 Nothing in the process currently accounts for that window:
 
 - There is no notion of a draining state. The process serves normally until SIGTERM, then tears down.
-- `/readyz` gates on `mcpBroker.IsReady()` (`cmd/mcp-broker-router/broker.go:65`), which reports whether any upstream is reachable — not whether this pod is terminating.
+- `/readyz` gates on `mcpBroker.IsReady()` (`cmd/mcp-broker-router/broker.go`), which reports whether any upstream is reachable — not whether this pod is terminating.
 - The pod spec sets no `preStop` hook and no `terminationGracePeriodSeconds` (`internal/controller/broker_router.go`), so the default 30s applies with nothing using it.
 
 Two prior fixes bounded the teardown but did not drain anything. #1362 registered SIGTERM, so the shutdown path runs at all under Kubernetes. #1390 bounded `GracefulStop`, bounded the broker shutdown, and moved telemetry flushing last so drain-window traces and metrics survive. What remains is coordination: nothing tells the pod to stop taking new work, and nothing waits for the work it already has.
@@ -33,7 +33,7 @@ Add an explicit lifecycle state to the broker/router process — `serving`, `dra
 - **Durable cleanup of backend sessions owned by a departing pod.** Declined in #1363: replaying an upstream `DELETE` from another process requires that session's credentials, and persisting per-user credentials for later replay is a security trade the gateway should not make. Legacy sessions fall back to Redis TTL and the upstream's own session timeout.
 - **Live session migration.** Reusing a backend session ID from Redis is not the same problem as transferring an active SDK transport or an in-flight request.
 - **Zero client-visible errors.** See [What this cannot promise](#what-this-cannot-promise).
-- **Configurable replica count.** `replicas` is hardcoded to `int32(1)` (`internal/controller/broker_router.go:101`) with no field in `api/v1alpha1`. Out of scope here.
+- **Configurable replica count.** `replicas` is hardcoded to `int32(1)` (`replicas := int32(1)` in `internal/controller/broker_router.go`) with no field in `api/v1alpha1`. Out of scope here.
 - **Making broker cleanup context-aware.** `mcpBrokerImpl.Shutdown` discards its context; #1390 bounded the *wait* rather than the work. The deeper fix belongs with in-flight work tracking, see [Future Considerations](#future-considerations).
 
 ## Job Stories
@@ -83,7 +83,7 @@ Both merged:
 
 Two mechanisms could withdraw traffic before teardown, and the choice is not arbitrary.
 
-**Readiness cannot do it.** The generated probe is `PeriodSeconds: 10`, `FailureThreshold: 3` (`internal/controller/broker_router.go:235-247`). Failing `/readyz` therefore takes up to 30 seconds to mark the pod unready — longer than the entire 27s shutdown budget. Readiness gating is worth having for observability and for cases where the pod is not being deleted, but it cannot be the mechanism that stops traffic during termination.
+**Readiness cannot do it.** The generated probe is `PeriodSeconds: 10`, `FailureThreshold: 3` (the `ReadinessProbe` in `internal/controller/broker_router.go`). Failing `/readyz` therefore takes up to 30 seconds to mark the pod unready — longer than the entire 27s shutdown budget. Readiness gating is worth having for observability and for cases where the pod is not being deleted, but it cannot be the mechanism that stops traffic during termination.
 
 **Pod deletion does it, and `preStop` buys the time.** Endpoint removal starts when the pod is marked Terminating, independent of readiness. `preStop` runs in the same window, so a sleep there lets propagation complete while the process is still serving.
 
@@ -206,7 +206,7 @@ Three things this arithmetic gets right that an earlier draft did not.
 
 `serverDrainTimeout` does not appear as a separate term. Task 5 starts `brokerServer.Shutdown` at the beginning of the drain, so the HTTP drain happens *inside* `drainDeadline`; charging both would bill the same wait twice. The `serverDrainTimeout` call remains in the teardown as a backstop, but it can only be reached with an already-drained server, so it contributes nothing to the worst case. `metricsServer.Shutdown` shares it and is likewise not a separate term.
 
-`drainDeadline` is 8s, not 15s, because Envoy's ext_proc `message_timeout` is `"10s"` (`internal/controller/mcpgatewayextension_controller.go:757`). Waiting longer than that means spending the tail of the budget on work Envoy has already abandoned. The deadline is deliberately set below the message timeout so the two cannot disagree about whether a request is still alive; if `message_timeout` is ever raised, `drainDeadline` should move with it.
+`drainDeadline` is 8s, not 15s, because Envoy's ext_proc `message_timeout` is `"10s"` (the `message_timeout` key in `internal/controller/mcpgatewayextension_controller.go`). Waiting longer than that means spending the tail of the budget on work Envoy has already abandoned. The deadline is deliberately set below the message timeout so the two cannot disagree about whether a request is still alive; if `message_timeout` is ever raised, `drainDeadline` should move with it.
 
 37s rather than 52s matters beyond tidiness. `RestartDeploymentAndWait` (`tests/e2e/kubectl_helpers.go`) blocks until the old pod is gone, and with `replicas=1` and `maxUnavailable=0` that is the full grace period on every e2e that restarts the deployment. A loose bound is paid on every CI run.
 
