@@ -75,6 +75,16 @@ When a platform engineer reads the release notes before upgrading, they want to 
 
 ## Not required
 
-No API reference changes: this iteration adds no CRD fields. If the budgets are later exposed on `MCPGatewayExtension`, `docs/reference/` needs updating at that point.
+## API Reference (`docs/reference/`)
+
+### When I want to tune drain timing for my cluster
+
+When a platform engineer finds the default propagation delay too short for their cluster, they want to know which field to set and what it bounds so that they can fix it without rebuilding the controller.
+
+**Cover:**
+
+- `spec.drain.propagationDelaySeconds` and `spec.drain.deadlineSeconds` on `MCPGatewayExtension`, their defaults, and how to measure what the delay should be
+- That `terminationGracePeriodSeconds` is derived from them and not settable directly
+- The validation rule that `deadlineSeconds` must stay below the ext_proc `message_timeout`, and why
 
 No manual test cases: the rollout-under-load e2e covers the drain guarantee, which meets the bar in `.claude/rules/manual-test-cases.md` for adequate automated coverage.

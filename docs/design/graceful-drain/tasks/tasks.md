@@ -159,7 +159,36 @@ go test ./cmd/... -race -count=1
 
 ---
 
-### Task 6: Pod lifecycle wiring
+### Task 6: Drain configuration on `MCPGatewayExtension`
+
+Depends on Task 1 for the defaults. Per `.claude/rules/crd-changes.md`, a CRD change carries generation, reconciler, status, tests and reference docs.
+
+**Files:**
+
+- `api/v1alpha1/mcpgatewayextension_types.go`
+- `internal/controller/mcpgatewayextension_controller.go`
+- `docs/reference/` — the `MCPGatewayExtension` reference
+
+**Acceptance criteria:**
+
+- [ ] `spec.drain.propagationDelaySeconds` and `spec.drain.deadlineSeconds` as optional `*int32`, matching the shape of `BackendPingIntervalSeconds`.
+- [ ] Unset fields fall back to the `internal/drain` defaults; the process never reads the CRD directly.
+- [ ] Validation rejects `deadlineSeconds` at or above the ext_proc `message_timeout`, with a clear status condition.
+- [ ] The merged teardown budgets stay constants and are deliberately not exposed.
+- [ ] `make generate-all` regenerates deepcopy, CRDs and Helm with no diff afterwards.
+- [ ] API reference updated.
+
+**Verification:**
+
+```bash
+make lint
+make generate-all && git diff --exit-code
+make test-controller-integration
+```
+
+---
+
+### Task 6a: Pod lifecycle wiring
 
 **Files:**
 
@@ -172,7 +201,7 @@ go test ./cmd/... -race -count=1
 
 - [ ] The generated Deployment sets a `preStop` hook sleeping `drainPropagationDelay`, imported from `internal/drain`, as `exec: ["/bin/sh","-c","sleep N"]`. The final image is Alpine running as UID 65532 (`Dockerfile`), so a shell is available. Native `lifecycle.preStop.sleep` is cleaner and survives a move to distroless, but it is GA only from Kubernetes 1.32 and this repo declares no supported floor — note it as a follow-up rather than adopting it here.
 - [ ] Confirm against a live gateway whether Envoy holds the ext_proc stream open for the duration of an SSE body, since Task 3's in-flight accounting assumes it may. Record the finding in the design.
-- [ ] `terminationGracePeriodSeconds` is `drain.TotalGracePeriod()`, never a literal.
+- [ ] `terminationGracePeriodSeconds` is derived from the effective drain values (CRD override or `internal/drain` default), never a literal.
 - [ ] `drainPropagationDelay` is validated against a real cluster: measure the interval between pod deletion and the endpoint disappearing from the gateway's Envoy config, and record the observed value in the design. Raise the default if 5s does not cover it.
 - [ ] The static manifest and the Helm chart match the controller output.
 - [ ] A controller test asserts the grace period is greater than the sum of all budgets.
@@ -270,7 +299,7 @@ Task 1 (state + budgets)
  ├─ Task 2 (readiness)        ─┐
  ├─ Task 3 (in-flight)        ─┤
  ├─ Task 4 (session refusal)  ─┤
- └─ Task 6 (pod spec)          │   ← needs budgets only, not 3/4
+ └─ Task 6 (CRD) → Task 6a (pod spec)  ← needs budgets only, not 3/4
                                ▼
                         Task 5 (drain sequence)
                                │
@@ -278,6 +307,6 @@ Task 1 (state + budgets)
                  Task 7 (metrics)   Task 8 (e2e)
 ```
 
-Tasks 2, 3 and 4 are independent of each other and can land in parallel once Task 1 is in. Task 5 needs 3 and 4, since the drain needs something to wait on and something to gate. Task 6 needs only the budgets from Task 1, so it can land early. Tasks 7 and 8 come last: metrics need the states to exist, and the e2e needs the whole sequence wired.
+Tasks 2, 3 and 4 are independent of each other and can land in parallel once Task 1 is in. Task 5 needs 3 and 4, since the drain needs something to wait on and something to gate. Task 6 needs only the defaults from Task 1, and 6a needs 6 so the pod spec can read effective values rather than constants — both can land early, ahead of the drain sequence. Tasks 7 and 8 come last: telemetry needs the states to exist, and the e2e needs the whole sequence wired.
 
-Task 9 can be drafted alongside Task 6, once the observable pod behaviour is fixed.
+Task 9 can be drafted alongside 6 and 6a, once the observable pod behaviour and the configuration surface are fixed.

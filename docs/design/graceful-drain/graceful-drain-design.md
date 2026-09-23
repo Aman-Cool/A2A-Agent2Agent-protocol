@@ -131,7 +131,21 @@ sequenceDiagram
 | Router (`Router202511`) | Refuses to initialize new stateful backend sessions while draining; returns a retryable error. Existing sessions continue to route. |
 | ext_proc server | Tracks in-flight **requests** so the drain can wait on them. Keeps accepting and serving streams throughout — see [What draining does not do](#what-draining-does-not-do). |
 | Broker HTTP server | `http.Server.Shutdown` is started at the beginning of the drain rather than in the teardown, so HTTP requests drain concurrently with ext_proc streams under `drainDeadline`. The `serverDrainTimeout` call in the teardown remains as the backstop for anything still open. |
-| Metrics | Exports drain duration, requests completed during drain, forced terminations. |
+| Drain telemetry | Emits an OTLP span and a structured log record with drain duration, requests completed, requests outstanding at the deadline, and whether termination was forced. Not Prometheus — see [Where drain telemetry goes](#where-drain-telemetry-goes). |
+
+### Router concerns versus broker concerns
+
+The binary hosts both halves of the component, and the drain touches each differently. Worth being explicit, since "independent deployment of router and broker" is a stated Non-Goal in both `router-2026-07-28` and `single-gateway-dual-protocol` — contemplated and deferred rather than ruled out.
+
+| Half | What the drain does to it |
+| --- | --- |
+| **Router** (ext_proc, gRPC) | Counts in-flight requests and waits for them; refuses new backend session initialization with a retryable response; `GracefulStop` bounded with a fallback to `Stop` (merged in #1390). Keeps accepting streams throughout. |
+| **Broker** (HTTP `/mcp`) | `brokerServer.Shutdown` started at the beginning of the drain; upstream manager teardown via `activeMCP.Stop`; pooled user sessions closed, each a blocking upstream `DELETE`, bounded by `brokerDrainTimeout` (merged in #1390). |
+| **Neither, or both** | Lifecycle state, `preStop`, the grace period, telemetry flush. Readiness gates both halves at once only because the Service exposes `http` and `grpc` off a single pod. |
+
+Tool and prompt caches need nothing on drain. They are process-local and the replacement pod rebuilds them from upstreams; there is no durable state to flush and nothing a departing pod owes them.
+
+**If the two are ever split, drain order becomes load-bearing.** The router hairpins `initialize` back through Envoy to the broker, so a broker that drains first breaks router work still in flight. The router must reach `terminating` before the broker begins draining, which in separate deployments means either an explicit dependency between their termination sequences or a broker drain long enough to outlast the router's. Readiness would also need splitting, since a single pod-level probe currently gates both ports. Nothing in this design blocks that split; it simply assumes today's single process, and this paragraph is the note that says what changes if that stops being true.
 
 ### State machine
 
@@ -216,9 +230,31 @@ Two distinct claims are involved here and only one of them is guaranteed. The **
 
 ### API Changes
 
-No CRD changes in this iteration. The budgets are package constants shared between the process and the controller, and the controller derives the pod spec from them. Operators using the controller-generated Deployment get correct values without configuration.
+The two operator-facing budgets are exposed on `MCPGatewayExtension`, following the shape `BackendPingIntervalSeconds` already establishes:
 
-Exposing the budgets on `MCPGatewayExtension` is deferred — see [Future Considerations](#future-considerations). Because the controller owns the Deployment, an operator cannot currently override them, so if tuning turns out to be needed the CRD is the right surface rather than flags.
+```go
+// Drain configures graceful shutdown behaviour.
+// +optional
+Drain *DrainConfig `json:"drain,omitempty"`
+
+type DrainConfig struct {
+    // PropagationDelaySeconds is how long preStop sleeps to let endpoint
+    // removal reach Envoy before the drain begins. Defaults to 5.
+    // +optional
+    PropagationDelaySeconds *int32 `json:"propagationDelaySeconds,omitempty"`
+
+    // DeadlineSeconds bounds the wait for in-flight work. Must remain below
+    // the ext_proc message_timeout. Defaults to 8.
+    // +optional
+    DeadlineSeconds *int32 `json:"deadlineSeconds,omitempty"`
+}
+```
+
+An earlier revision made these constants and deferred the CRD, on the reasoning that the controller owns the Deployment so there is nothing for an operator to override anyway. That reasoning was right about the mechanism and wrong about the need. `drainPropagationDelay` is the design's one unbounded assumption: endpoint propagation depends on cluster size, istiod load and CNI, none of which the gateway controls or can predict. A default that is correct on a kind cluster is not necessarily correct on a large production one, and an operator who discovers that cannot rebuild the controller to fix it. That is not a hypothetical future trigger, it is the expected case for someone.
+
+The teardown budgets merged in #1390 stay as constants. They bound the process's own shutdown, which does not vary by cluster, and exposing them would invite operators to tune values whose only effect is how long a dying pod lingers.
+
+The derivation invariant is preserved: the controller computes `terminationGracePeriodSeconds` from whatever the effective values are — CRD override or default — so the pod spec and the process can still never disagree. Validation rejects a `DeadlineSeconds` at or above the ext_proc `message_timeout`, since that combination silently spends budget on work Envoy has already abandoned.
 
 ### Data storage
 
@@ -259,7 +295,7 @@ On the ceiling: no rollout `Strategy` is set, so Kubernetes defaults apply and a
 ## Future Considerations
 
 - **Context-aware broker cleanup.** `mcpBrokerImpl.Shutdown` discards its context; `activeMCP.Stop` blocks on `<-a.manager.done` and the pooled-session drain performs a blocking upstream `DELETE` per entry. #1390 bounded the wait, not the work. Threading a context through would make the bound real, and the in-flight tracking added here is the natural place to build from.
-- **Budgets on `MCPGatewayExtension`.** Constants are the right default: the controller owns the Deployment, so flags are not a surface an operator can reach anyway. The kill criterion is concrete — a real deployment where measured endpoint propagation exceeds `drainPropagationDelay` and the operator cannot rebuild the controller to raise it. At that point the budgets move onto `MCPGatewayExtension`, not onto flags.
+- **Independent deployment of router and broker.** A stated Non-Goal elsewhere in the project, so not addressed here beyond recording what would change — see [Router concerns versus broker concerns](#router-concerns-versus-broker-concerns).
 - **Durable cleanup obligations.** Declined in #1363 on security and lifetime grounds. If `Router202511` outlives expectations, or if a configurable replica count arrives, the analysis in that issue is the starting point.
 - **Drain on config change.** The same machinery could quiesce a pod during a disruptive config reload rather than only at termination.
 
