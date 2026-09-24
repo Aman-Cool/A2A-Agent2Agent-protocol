@@ -12,7 +12,7 @@ Nothing in the process currently accounts for that window:
 - `/readyz` gates on `mcpBroker.IsReady()` (`cmd/mcp-broker-router/broker.go`), which reports whether any upstream is reachable — not whether this pod is terminating.
 - The pod spec sets no `preStop` hook and no `terminationGracePeriodSeconds` (`internal/controller/broker_router.go`), so the default 30s applies with nothing using it.
 
-Two prior fixes bounded the teardown but did not drain anything. #1362 registered SIGTERM, so the shutdown path runs at all under Kubernetes. #1390 bounded `GracefulStop`, bounded the broker shutdown, and moved telemetry flushing last so drain-window traces and metrics survive. What remains is coordination: nothing tells the pod to stop taking new work, and nothing waits for the work it already has.
+Two prior fixes bounded the teardown but did not drain anything. #1362 registered SIGTERM, so the shutdown path runs at all under Kubernetes. #1390 bounded `GracefulStop`, bounded the broker shutdown, and moved telemetry flushing last so drain-window traces and OTLP log export survive. What remains is coordination: nothing tells the pod to stop taking new work, and nothing waits for the work it already has.
 
 ## Summary
 
@@ -68,7 +68,7 @@ When an MCP developer's tool takes longer than the drain deadline to return and 
 
 ### When a platform engineer investigates a slow rollout
 
-When a rollout takes longer than expected, they want drain duration, requests completed during drain, and forced terminations exported as metrics, so that they can tell a slow drain from a stuck one without reading pod logs.
+When a rollout takes longer than expected, they want drain duration, requests completed during drain, and forced terminations emitted as a span and a structured log record, so that they can tell a slow drain from a stuck one from telemetry the departing pod actually managed to export.
 
 ## Design
 
@@ -208,21 +208,27 @@ The transition to `draining` therefore does not need to cancel work already admi
 
 ```text
 terminationGracePeriodSeconds = drainPropagationDelay   (preStop sleep, 5s)
-                              + drainDeadline           (HTTP + ext_proc drained concurrently, 8s)
+                              + drainDeadline           (HTTP + ext_proc drained concurrently, 15s)
                               + brokerDrainTimeout       (5s, merged)
                               + grpcDrainTimeout         (10s, merged)
                               + telemetryFlushTimeout    (4s, merged)
                               + safetyMargin             (5s)
-                              = 37s
+                              = 44s
 ```
 
 Three things this arithmetic gets right that an earlier draft did not.
 
 `serverDrainTimeout` does not appear as a separate term. Task 5 starts `brokerServer.Shutdown` at the beginning of the drain, so the HTTP drain happens *inside* `drainDeadline`; charging both would bill the same wait twice. The `serverDrainTimeout` call remains in the teardown as a backstop, but it can only be reached with an already-drained server, so it contributes nothing to the worst case. `metricsServer.Shutdown` shares it and is likewise not a separate term.
 
-`drainDeadline` is 8s, not 15s, because Envoy's ext_proc `message_timeout` is `"10s"` (the `message_timeout` key in `internal/controller/mcpgatewayextension_controller.go`). Waiting longer than that means spending the tail of the budget on work Envoy has already abandoned. The deadline is deliberately set below the message timeout so the two cannot disagree about whether a request is still alive; if `message_timeout` is ever raised, `drainDeadline` should move with it.
+`drainDeadline` is a policy choice, not a derived value, and it is deliberately **not** tied to the ext_proc `message_timeout`.
 
-37s rather than 52s matters beyond tidiness. `RestartDeploymentAndWait` (`tests/e2e/kubectl_helpers.go`) blocks until the old pod is gone, and with `replicas=1` and `maxUnavailable=0` that is the full grace period on every e2e that restarts the deployment. A loose bound is paid on every CI run.
+An earlier revision set it to 8s on the reasoning that exceeding the 10s `message_timeout` would mean waiting on work Envoy had already abandoned. That was wrong. `message_timeout` bounds each individual ext_proc message — how long Envoy waits for *this process* to answer one `RequestHeaders` or `ResponseHeaders` exchange — not the lifetime of the HTTP request. A `tools/call` that spends a minute in an upstream tool completes every ext_proc exchange in milliseconds and is never close to the message timeout. Capping the drain below it would have cut healthy long-running requests at 8s, which is the opposite of what a drain is for.
+
+So the deadline answers a different question: how long is it worth holding a terminating pod open for work that may still finish? Longer completes more requests and lengthens every rollout; shorter frees the pod sooner and abandons more. The default is 15s, which covers typical tool calls, and `spec.drain.deadlineSeconds` exists precisely because the right answer varies — a deployment fronting slow tools will want more, and CI can set it low to keep rollout-restart tests quick.
+
+The only hard bound is the grace period: the deadline plus the other budgets must fit inside `terminationGracePeriodSeconds`, and since the controller derives that from the effective values, raising the deadline raises the grace period rather than risking a mid-drain kill.
+
+The grace period is paid on every rollout, not only bad ones: `RestartDeploymentAndWait` (`tests/e2e/kubectl_helpers.go`) blocks until the old pod is gone, and with `replicas=1` and `maxUnavailable=0` that is the full period on every e2e that restarts the deployment. That is the cost side of a generous `drainDeadline`, and the reason it is a CRD field rather than a constant — CI can set it low while a production deployment fronting slow tools sets it high.
 
 The constants live in an importable package (`internal/drain`) rather than in `cmd/mcp-broker-router`, because `main` cannot be imported and the controller must derive the pod spec from the same source. Duplicating them would reintroduce exactly the drift this arithmetic exists to prevent.
 
@@ -243,8 +249,9 @@ type DrainConfig struct {
     // +optional
     PropagationDelaySeconds *int32 `json:"propagationDelaySeconds,omitempty"`
 
-    // DeadlineSeconds bounds the wait for in-flight work. Must remain below
-    // the ext_proc message_timeout. Defaults to 8.
+    // DeadlineSeconds bounds the wait for in-flight work before teardown
+    // begins. Raising it completes more requests and lengthens every
+    // rollout. Defaults to 15.
     // +optional
     DeadlineSeconds *int32 `json:"deadlineSeconds,omitempty"`
 }
@@ -254,7 +261,7 @@ An earlier revision made these constants and deferred the CRD, on the reasoning 
 
 The teardown budgets merged in #1390 stay as constants. They bound the process's own shutdown, which does not vary by cluster, and exposing them would invite operators to tune values whose only effect is how long a dying pod lingers.
 
-The derivation invariant is preserved: the controller computes `terminationGracePeriodSeconds` from whatever the effective values are — CRD override or default — so the pod spec and the process can still never disagree. Validation rejects a `DeadlineSeconds` at or above the ext_proc `message_timeout`, since that combination silently spends budget on work Envoy has already abandoned.
+The derivation invariant is preserved: the controller computes `terminationGracePeriodSeconds` from whatever the effective values are — CRD override or default — so the pod spec and the process can still never disagree. Raising either field raises the grace period with it; there is no combination an operator can set that makes the drain outlast the pod.
 
 ### Data storage
 

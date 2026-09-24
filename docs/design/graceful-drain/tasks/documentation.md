@@ -85,6 +85,6 @@ When a platform engineer finds the default propagation delay too short for their
 
 - `spec.drain.propagationDelaySeconds` and `spec.drain.deadlineSeconds` on `MCPGatewayExtension`, their defaults, and how to measure what the delay should be
 - That `terminationGracePeriodSeconds` is derived from them and not settable directly
-- The validation rule that `deadlineSeconds` must stay below the ext_proc `message_timeout`, and why
+- That `deadlineSeconds` is a policy choice, not a value derived from any Envoy timeout: raising it completes more in-flight requests and lengthens every rollout
 
 No manual test cases: the rollout-under-load e2e covers the drain guarantee, which meets the bar in `.claude/rules/manual-test-cases.md` for adequate automated coverage.
