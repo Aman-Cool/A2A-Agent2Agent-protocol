@@ -33,7 +33,7 @@ Add an explicit lifecycle state to the broker/router process — `serving`, `dra
 - **Durable cleanup of backend sessions owned by a departing pod.** Declined in #1363: replaying an upstream `DELETE` from another process requires that session's credentials, and persisting per-user credentials for later replay is a security trade the gateway should not make. Legacy sessions fall back to Redis TTL and the upstream's own session timeout.
 - **Live session migration.** Reusing a backend session ID from Redis is not the same problem as transferring an active SDK transport or an in-flight request.
 - **Zero client-visible errors.** See [What this cannot promise](#what-this-cannot-promise).
-- **Configurable replica count.** `replicas` is hardcoded to `int32(1)` (`replicas := int32(1)` in `internal/controller/broker_router.go`) with no field in `api/v1alpha1`. Out of scope here.
+- **Configurable replica count.** `replicas` is hardcoded to `int32(1)` (`replicas := int32(1)` in `internal/controller/broker_router.go`) with no field in `api/v1`. Out of scope here.
 - **Making broker cleanup context-aware.** `mcpBrokerImpl.Shutdown` discards its context; #1390 bounded the *wait* rather than the work. The deeper fix belongs with in-flight work tracking, see [Future Considerations](#future-considerations).
 
 ## Job Stories
@@ -130,7 +130,7 @@ sequenceDiagram
 | Health handlers (`broker.go`) | `/readyz` fails while `draining` or `terminating`; `/healthz` reflects only whether the process can still operate. |
 | Router (`Router202511`) | Refuses to initialize new stateful backend sessions while draining; returns a retryable error. Existing sessions continue to route. |
 | ext_proc server | Tracks in-flight **requests** so the drain can wait on them. Keeps accepting and serving streams throughout — see [What draining does not do](#what-draining-does-not-do). |
-| Broker HTTP server | `http.Server.Shutdown` is started at the beginning of the drain rather than in the teardown, so HTTP requests drain concurrently with ext_proc streams under `drainDeadline`. The `serverDrainTimeout` call in the teardown remains as the backstop for anything still open. |
+| Broker HTTP server | `http.Server.Shutdown` is started at the beginning of the drain rather than in the teardown, so HTTP requests drain concurrently with in-flight ext_proc requests under `drainDeadline`. Open streams with no request in flight are not waited on. The `serverDrainTimeout` call in the teardown remains as the backstop for anything still open. |
 | Drain telemetry | Emits an OTLP span and a structured log record with drain duration, requests completed, requests outstanding at the deadline, and whether termination was forced. Not Prometheus — see [Where drain telemetry goes](#where-drain-telemetry-goes). |
 
 ### Router concerns versus broker concerns
@@ -171,7 +171,7 @@ Two things a draining pod must keep doing, both of which an earlier draft of thi
 
 The tracked unit is therefore an **in-flight request**: incremented when a request's headers are received, released when that request's terminal response has been sent. An idle SSE stream holds no in-flight requests and does not delay the drain.
 
-> Open verification: whether Envoy holds the ext_proc stream open for the duration of an SSE body under the current `response_body_mode` has not been confirmed against a live gateway. It belongs with the propagation measurement in Task 6, since both are cluster-observable facts this design currently assumes.
+> **Note:** Open verification. Whether Envoy holds the ext_proc stream open for the duration of an SSE body under the current `response_body_mode` has not been confirmed against a live gateway. It belongs with the propagation measurement in Task 6a, since both are cluster-observable facts this design currently assumes.
 
 ### Where drain telemetry goes
 
@@ -192,7 +192,7 @@ The refusal needs a concrete contract, since documentation and three e2e cases t
 
 A draining pod answers a request that would create a new backend session with **HTTP 503** and a `Retry-After: 1` header, carrying a JSON-RPC error body with code **-32000** (implementation-defined server error) and a message identifying gateway drain. 503 is the correct HTTP semantic — the condition is transient and the request should be retried elsewhere — and the router already returns typed HTTP statuses through `RouterError`, so this needs no new mechanism.
 
-> Open verification: whether the official Go SDK retries a 503 from `initialize` transparently, or surfaces it to the caller, has not been confirmed. The job story above assumes an SDK that reconnects. Task 8 must observe actual client behaviour and, if the SDK surfaces it, the guidance in the user documentation changes from "your client will retry" to "your client must retry". The gateway's contract is unaffected either way.
+> **Note:** Open verification. Whether the official Go SDK retries a 503 from `initialize` transparently, or surfaces it to the caller, has not been confirmed. The job story above assumes an SDK that reconnects. Task 8 must observe actual client behaviour and, if the SDK surfaces it, the guidance in the user documentation changes from "your client will retry" to "your client must retry". The gateway's contract is unaffected either way.
 
 ### Linearization point for session refusal
 
@@ -274,8 +274,8 @@ None. The lifecycle state is process-local and deliberately not persisted: it de
 | Rollout while requests are in flight | Envoy routes to a terminating pod during propagation; ext_proc fails closed; local 5xx | `preStop` sleep covers propagation; requests served normally |
 | New session arrives after SIGTERM | Backend session initialized, then abandoned mid-teardown | Refused with a retryable error; no orphaned backend session created |
 | In-flight `tools/call` at SIGTERM | Cut at the socket when the servers stop | Waited for within `drainDeadline`; completes if it can |
-| Long-lived ext_proc stream at SIGTERM | Bounded by `grpcDrainTimeout` (#1390), forced at 10s | Unchanged; drain gives it a chance to finish first |
-| Drain exceeds its deadline | n/a | Forced into `terminating`, counted in metrics, bounded teardown proceeds |
+| Long-lived ext_proc stream at SIGTERM | Bounded by `grpcDrainTimeout` (#1390), forced at 10s | Requests on it are waited for within `drainDeadline`; the stream itself is not, and the bounded teardown closes it |
+| Drain exceeds its deadline | n/a | Forced into `terminating`, recorded in the drain span and log record, bounded teardown proceeds |
 | `preStop` + drain exceeds grace period | Pod killed mid-drain | Grace period computed from the same budget constants, so the process cannot outspend it |
 | Endpoint removal slower than `drainPropagationDelay` | Requests hit a terminating pod; ext_proc fails closed; local 5xx | Not eliminated. New sessions get a retryable error instead of a reset; existing sessions still route. Mitigated by raising the delay, not by the grace period |
 | Node drain or eviction | Same as rollout, but no replacement pod is ready | Drain still bounded and clean; the window is an outage regardless |

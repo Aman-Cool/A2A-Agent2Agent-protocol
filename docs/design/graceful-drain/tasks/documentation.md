@@ -34,8 +34,9 @@ When a platform engineer investigates a slow rollout, they want the relevant sig
 
 **Cover:**
 
-- Drain duration, requests completed during drain, forced terminations
-- What a rising forced-termination count indicates, and what to do about it
+- The drain span and its matching structured log record: drain duration, requests completed, requests outstanding at the deadline, and whether termination was forced
+- Why these are spans and logs rather than Prometheus metrics: the scrape endpoint closes before the pod exits
+- What repeated forced terminations across rollouts indicate, and what to do about it
 - Why drain-window telemetry is exported at all, given that OTel shutdown ordering was previously wrong
 
 ### When my client sees errors during a deploy
@@ -48,6 +49,27 @@ When an MCP client developer sees failures coincide with a gateway rollout, they
 - Whether the official Go SDK retries this transparently or surfaces it — Task 8 establishes which, and the guidance is either "your client will retry" or "your client must retry"
 - Why a side-effecting tool call whose response was lost cannot be retried safely by the gateway on the client's behalf
 - Existing sessions are unaffected by drain; reconnection is not required
+
+### When my agent runs unattended across a rollout
+
+When a non-interactive agent hits a gateway rollout mid-task, with no human to retry for it, its author wants the agent to recover on its own so that a routine deploy does not fail an unattended job.
+
+**Cover:**
+
+- Treat HTTP 503 with JSON-RPC -32000 on `initialize` as retryable, honouring `Retry-After` rather than retrying in a tight loop
+- Bound the retries, so an agent does not spin through a long outage such as a node drain with no second replica
+- A `tools/call` whose response was lost is not the same case: retry it only if the tool is idempotent, since the gateway cannot know whether the side effect happened
+- Edge case: an agent holding an idle `GET /mcp` stream sees it close at the end of the drain and must reconnect, while its gateway session stays valid
+
+### When I want my MCP server to behave well behind a gateway that drains
+
+When an MCP Developer runs a server behind the gateway, they want to know what a gateway rollout does to their server so that they can size tool latency and session lifetime against it.
+
+**Cover:**
+
+- Drain never closes backend sessions that remain valid; the replacement pod keeps using them, so the server sees no `DELETE` on a routine rollout
+- Tools that routinely run longer than `spec.drain.deadlineSeconds` may lose their response during a rollout; either keep them inside the deadline or ask the platform engineer to raise it
+- Edge case: sessions abandoned by a pod that is killed, or by a client that disconnects without terminating, are only reclaimed by the server's own idle timeout. The `go-sdk` default `SessionTimeout` of zero never closes them, so servers should set one
 
 ## Security Architecture (`docs/design/security-architecture.md`)
 
@@ -73,8 +95,6 @@ When a platform engineer reads the release notes before upgrading, they want to 
 - Pods take longer to terminate by design
 - New retryable error during rollouts, and what clients should do with it
 
-## Not required
-
 ## API Reference (`docs/reference/`)
 
 ### When I want to tune drain timing for my cluster
@@ -86,5 +106,7 @@ When a platform engineer finds the default propagation delay too short for their
 - `spec.drain.propagationDelaySeconds` and `spec.drain.deadlineSeconds` on `MCPGatewayExtension`, their defaults, and how to measure what the delay should be
 - That `terminationGracePeriodSeconds` is derived from them and not settable directly
 - That `deadlineSeconds` is a policy choice, not a value derived from any Envoy timeout: raising it completes more in-flight requests and lengthens every rollout
+
+## Not required
 
 No manual test cases: the rollout-under-load e2e covers the drain guarantee, which meets the bar in `.claude/rules/manual-test-cases.md` for adequate automated coverage.

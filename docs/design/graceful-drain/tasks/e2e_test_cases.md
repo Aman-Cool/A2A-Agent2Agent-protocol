@@ -28,7 +28,7 @@ Format follows `tests/e2e/test_cases.md`. `Drain` is the feature tag; only the c
 
 - When a tool call outlasts the drain deadline, the pod should stop waiting, proceed to the bounded teardown, and exit within terminationGracePeriodSeconds rather than being killed by the kubelet. The overdue call is permitted to fail, and this is the bound the Happy case above deliberately excludes: assert the failure is bounded in time, and assert the forced termination via the drain log record on stdout rather than a Prometheus counter — the metrics endpoint is closed before the pod exits, so a drain-time counter can never be scraped. Uses a delay longer than the deadline.
 
-### [Drain] Test HTTP requests drain alongside ext_proc streams
+### [Drain] Test HTTP requests drain alongside ext_proc requests
 
 - When a slow HTTP request to the broker is in flight and the pod receives SIGTERM, the request should be given the drain deadline to complete rather than being cut when the teardown begins. Confirms brokerServer.Shutdown is started at the beginning of the drain rather than only in the later teardown, which is what makes the design's "HTTP and ext_proc work" guarantee true for both.
 
@@ -54,7 +54,7 @@ Format follows `tests/e2e/test_cases.md`. `Drain` is the feature tag; only the c
 
 ### [Drain] Test the drain response carries the documented contract
 
-- When a draining pod refuses a new backend session, the response should be HTTP 503 with a Retry-After header and a JSON-RPC error body using the documented code, rather than a connection reset or an ext_proc 5xx. Also records what the official Go SDK does with that response, since the user documentation's retry guidance depends on whether the SDK reconnects transparently or surfaces the error.
+- When a draining pod refuses a new backend session, the response should be HTTP 503 with `Retry-After: 1` and a JSON-RPC error body with code -32000 and a message identifying gateway drain, rather than a connection reset or an ext_proc 5xx. Assert each value exactly, so a 503 from anywhere else in the path cannot pass for the drain response. Also records what the official Go SDK does with that response, since the user documentation's retry guidance depends on whether the SDK reconnects transparently or surfaces the error.
 
 ### [Drain] Test steady-state behaviour is unaffected
 
